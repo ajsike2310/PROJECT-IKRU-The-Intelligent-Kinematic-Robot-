@@ -170,7 +170,7 @@ PROJECT-IKRU/
 ├── ESP32.jpeg                         # ESP32 hardware reference image
 ├── L293Dmotordriver.jpeg              # L293D module reference image
 │
-└── hi/                                # Main Python application
+└── src/                                # Main Python application
     ├── __init__.py                    # Package initializer
     ├── robot.py                       # Robot WebSocket client class
     ├── chat.py                        # AI chat loop & LLM integration
@@ -181,7 +181,7 @@ PROJECT-IKRU/
 
 ### File Descriptions
 
-#### `hi/robot.py` — Robot Controller Class
+#### `src/robot.py` — Robot Controller Class
 Provides a clean Python API to communicate with the ESP32 over WebSocket.
 
 ```python
@@ -194,10 +194,10 @@ robot.stop()                      # Send STOP command
 robot.close()                     # Close WebSocket connection
 ```
 
-#### `hi/chat.py` — AI Chat Loop
+#### `src/chat.py` — AI Chat Loop
 The main entry point. Accepts natural language input, queries the local LLM, parses the JSON tool call, and dispatches the correct robot function.
 
-#### `hi/esp32_controller/esp32_controller.ino` — ESP32 Firmware
+#### `src/esp32_controller/esp32_controller.ino` — ESP32 Firmware
 Runs on the ESP32. Connects to Wi-Fi, starts a WebSocket server on **port 81**, and interprets incoming text commands (`FORWARD`, `BACKWARD`, `LEFT`, `RIGHT`, `STOP`) to control the motors via the L293D driver.
 
 ---
@@ -292,7 +292,7 @@ ollama list
 
 ### 4. Running the Robot
 
-**Step 1:** Update the IP address in `hi/chat.py` to match your ESP32's IP:
+**Step 1:** Update the IP address in `src/chat.py` to match your ESP32's IP:
 ```python
 robot = Robot(ip="192.168.1.44")  # Change this to your ESP32's IP
 ```
@@ -304,7 +304,7 @@ ollama serve
 
 **Step 3:** Launch IKRU:
 ```bash
-cd hi
+cd src
 python chat.py
 ```
 
