@@ -53,13 +53,23 @@ class Robot:
     # ============================================================
     # EMOTIONS
     #
-    # These functions invoke the corresponding C++ functions
-    # running on the ESP32.
+    # These functions invoke the corresponding C++ GoTo_* functions
+    # running on the ESP32 via the esp32-eyes Face library.
     # ============================================================
+
+    def normal(self):
+
+        self.send("NORMAL")
+
 
     def happy(self):
 
         self.send("HAPPY")
+
+
+    def glee(self):
+
+        self.send("GLEE")
 
 
     def sad(self):
@@ -67,14 +77,19 @@ class Robot:
         self.send("SAD")
 
 
-    def angry(self):
+    def worried(self):
 
-        self.send("ANGRY")
+        self.send("WORRIED")
 
 
-    def excited(self):
+    def focused(self):
 
-        self.send("EXCITED")
+        self.send("FOCUSED")
+
+
+    def annoyed(self):
+
+        self.send("ANNOYED")
 
 
     def surprised(self):
@@ -82,9 +97,19 @@ class Robot:
         self.send("SURPRISED")
 
 
-    def thinking(self):
+    def skeptic(self):
 
-        self.send("THINKING")
+        self.send("SKEPTIC")
+
+
+    def frustrated(self):
+
+        self.send("FRUSTRATED")
+
+
+    def unimpressed(self):
+
+        self.send("UNIMPRESSED")
 
 
     def sleepy(self):
@@ -92,14 +117,34 @@ class Robot:
         self.send("SLEEPY")
 
 
-    def worried(self):
+    def suspicious(self):
 
-        self.send("WORRIED")
+        self.send("SUSPICIOUS")
 
 
-    def idle(self):
+    def squint(self):
 
-        self.send("IDLE")
+        self.send("SQUINT")
+
+
+    def angry(self):
+
+        self.send("ANGRY")
+
+
+    def furious(self):
+
+        self.send("FURIOUS")
+
+
+    def scared(self):
+
+        self.send("SCARED")
+
+
+    def awe(self):
+
+        self.send("AWE")
 
 
     # ============================================================

@@ -1,6 +1,6 @@
 import socket
 
-IP = "10.110.131.144"
+IP = "192.168.1.85"
 PORT = 81
 
 print(f"Testing TCP connection to {IP}:{PORT}")
