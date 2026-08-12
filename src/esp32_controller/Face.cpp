@@ -78,16 +78,11 @@ void Face::Update() {
 }
 
 void Face::Draw() {
-  // Clear the display
-  u8g2.clearBuffer();
-  // Draw left eye
-	LeftEye.CenterX = CenterX - EyeSize / 2 - EyeInterDistance;
+	LeftEye.CenterX = CenterX - (EyeSize * CurrentScale) / 2 - (EyeInterDistance * CurrentScale);
 	LeftEye.CenterY = CenterY;
 	LeftEye.Draw();
-  // Draw right eye
-	RightEye.CenterX = CenterX + EyeSize / 2 + EyeInterDistance;
+
+	RightEye.CenterX = CenterX + (EyeSize * CurrentScale) / 2 + (EyeInterDistance * CurrentScale);
 	RightEye.CenterY = CenterY;
 	RightEye.Draw();
-  // Transfer the redrawn buffer to the display
-  u8g2.sendBuffer();
 }

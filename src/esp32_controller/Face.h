@@ -34,6 +34,7 @@ public:
     uint16_t CenterY;
     uint16_t EyeSize;
     uint16_t EyeInterDistance = 4;
+    float CurrentScale = 1.0;
 
     Eye LeftEye;
     Eye RightEye;

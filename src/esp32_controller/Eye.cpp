@@ -11,6 +11,7 @@ You should have received a copy of the GNU Affero General Public License along w
 ****************************************************/
 
 #include "Eye.h"
+#include "Face.h"
 
 Eye::Eye(Face& face) : _face(face) {
 
@@ -51,7 +52,19 @@ void Eye::Update() {
 
 void Eye::Draw() {
 	Update();
-	EyeDrawer::Draw(CenterX, CenterY, FinalConfig);
+	EyeConfig scaledConfig = *FinalConfig;
+	scaledConfig.Height = (int16_t)(scaledConfig.Height * _face.CurrentScale);
+	scaledConfig.Width = (int16_t)(scaledConfig.Width * _face.CurrentScale);
+	scaledConfig.OffsetX = (int16_t)(scaledConfig.OffsetX * _face.CurrentScale);
+	scaledConfig.OffsetY = (int16_t)(scaledConfig.OffsetY * _face.CurrentScale);
+	scaledConfig.Radius_Top = (int16_t)(scaledConfig.Radius_Top * _face.CurrentScale);
+	scaledConfig.Radius_Bottom = (int16_t)(scaledConfig.Radius_Bottom * _face.CurrentScale);
+	scaledConfig.Inverse_Radius_Top = (int16_t)(scaledConfig.Inverse_Radius_Top * _face.CurrentScale);
+	scaledConfig.Inverse_Radius_Bottom = (int16_t)(scaledConfig.Inverse_Radius_Bottom * _face.CurrentScale);
+	scaledConfig.Inverse_Offset_Top = (int16_t)(scaledConfig.Inverse_Offset_Top * _face.CurrentScale);
+	scaledConfig.Inverse_Offset_Bottom = (int16_t)(scaledConfig.Inverse_Offset_Bottom * _face.CurrentScale);
+	// Slopes are ratios, so they don't need scaling, but the delta_y calculation in EyeDrawer uses Height, which is already scaled.
+	EyeDrawer::Draw(CenterX, CenterY, &scaledConfig);
 }
 
 void Eye::ApplyPreset(const EyeConfig config) {

@@ -107,6 +107,18 @@ unsigned long speechStartTime = 0;
 unsigned long speechFinishedTime = 0;
 
 // ============================================================
+// EYE ANIMATION VARIABLES
+// ============================================================
+
+float currentEyeScale = 1.0;
+float targetEyeScale = 1.0;
+float currentEyeX = 64.0;
+float targetEyeX = 64.0;
+float currentEyeY = 32.0;
+float targetEyeY = 32.0;
+unsigned long animationLastMillis = 0;
+
+// ============================================================
 // FUNCTION DECLARATIONS
 // ============================================================
 
@@ -285,7 +297,9 @@ void prepareMessage(String text) {
 
   text.trim();
 
-  const int maxWidth = 126;
+  // Restrict width so text stays in the left column, 
+  // leaving the right side (X > 75) completely empty for the eyes.
+  const int maxWidth = 75;
 
   int position = 0;
 
@@ -336,15 +350,31 @@ void prepareMessage(String text) {
       currentLine = testLine;
     }
 
-    // Word does not fit — flush current line
+    // Word does not fit
     else {
-
       if (currentLine.length() > 0) {
         messageLines[messageLineCount] = currentLine;
         messageLineCount++;
+        currentLine = "";
       }
 
-      currentLine = word;
+      // If the word ITSELF is too long for the max width, we must break it by characters
+      if (!wordFits(word, maxWidth)) {
+        String partialWord = "";
+        for (int c = 0; c < (int)word.length(); c++) {
+          String testPartial = partialWord + word.charAt(c);
+          if (wordFits(testPartial + "-", maxWidth)) {
+            partialWord = testPartial;
+          } else {
+            messageLines[messageLineCount] = partialWord + "-";
+            messageLineCount++;
+            partialWord = String(word.charAt(c));
+          }
+        }
+        currentLine = partialWord;
+      } else {
+        currentLine = word;
+      }
     }
   }
 
@@ -372,13 +402,16 @@ void oledMessage(String text) {
   // Switch to speaking mode (stops face->Update() in loop)
   oledMode = OLED_SPEAKING;
 
+  // Target small eyes in bottom right corner (X > 75)
+  // At 0.45 scale, eyes span approx X=90 to X=122
+  targetEyeScale = 0.45;
+  targetEyeX = 106.0;
+  targetEyeY = 48.0;
+
   // Reset timers
   speechStartTime = millis();
   lastScrollUpdate = millis();
   speechFinishedTime = 0;
-
-  // Draw immediately
-  drawSpeakingText();
 }
 
 // ============================================================
@@ -386,8 +419,6 @@ void oledMessage(String text) {
 // ============================================================
 
 void drawSpeakingText() {
-
-  u8g2.clearBuffer();
 
   u8g2.setFont(SPEECH_FONT);
 
@@ -399,12 +430,18 @@ void drawSpeakingText() {
     int y = scrollY + (i * SPEECH_LINE_HEIGHT) + 14;
 
     if (y >= 0 && y <= 78) {
-
-      u8g2.drawStr(1, y, messageLines[i].c_str());
+      u8g2.drawStr(4, y, messageLines[i].c_str());
     }
   }
 
-  u8g2.sendBuffer();
+  // Mask out the top and bottom edges so text doesn't overlap the frame lines
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(0, 0, 84, 4);
+  u8g2.drawBox(0, 60, 84, 4);
+  u8g2.setDrawColor(1);
+
+  // Draw a rounded frame (square/box) around the text area
+  u8g2.drawRFrame(0, 0, 84, 64, 4);
 }
 
 // ============================================================
@@ -431,7 +468,6 @@ void updateSpeechScroll() {
 
     if (speechFinishedTime == 0) {
       speechFinishedTime = now;
-      drawSpeakingText();
       return;
     }
 
@@ -439,6 +475,9 @@ void updateSpeechScroll() {
 
       // Return to face/eye mode
       oledMode = OLED_IDLE;
+      targetEyeScale = 1.0;
+      targetEyeX = 64.0;
+      targetEyeY = 32.0;
 
       return;
     }
@@ -448,7 +487,6 @@ void updateSpeechScroll() {
   if (now - lastScrollUpdate >= SCROLL_SPEED) {
     lastScrollUpdate = now;
     scrollY--;
-    drawSpeakingText();
   }
 }
 
@@ -470,8 +508,8 @@ void oledStartup() {
   face = new Face(/* screenWidth = */ 128, /* screenHeight = */ 64,
                   /* eyeSize = */ 40);
 
-  // Start with a happy expression
-  face->Expression.GoTo_Happy();
+  // Start with a normal expression
+  face->Expression.GoTo_Normal();
 
   // Auto-blink enabled
   face->RandomBlink = true;
@@ -577,7 +615,8 @@ void setup() {
 
   // Initial emotion
   oledMode = OLED_IDLE;
-  face->Expression.GoTo_Happy();
+  face->Expression.GoTo_Normal();
+  animationLastMillis = millis();
 }
 
 // ============================================================
@@ -592,10 +631,34 @@ void loop() {
   // Update speech scroll (returns early if not in speaking mode)
   updateSpeechScroll();
 
-  // Update face animation only while in idle (eye) mode
-  if (oledMode == OLED_IDLE) {
-    face->Update();
+  unsigned long now = millis();
+  float dt = (now - animationLastMillis) / 1000.0;
+  animationLastMillis = now;
+
+  // Smooth interpolation for eyes (approx 600ms transition)
+  float lerpFactor = 10.0 * dt;
+  if (lerpFactor > 1.0) lerpFactor = 1.0;
+
+  currentEyeScale += (targetEyeScale - currentEyeScale) * lerpFactor;
+  currentEyeX += (targetEyeX - currentEyeX) * lerpFactor;
+  currentEyeY += (targetEyeY - currentEyeY) * lerpFactor;
+
+  face->CurrentScale = currentEyeScale;
+  face->CenterX = (uint16_t)currentEyeX;
+  face->CenterY = (uint16_t)currentEyeY;
+
+  // Clear buffer for new frame
+  u8g2.clearBuffer();
+
+  if (oledMode == OLED_SPEAKING) {
+    drawSpeakingText();
   }
+
+  // Draw eyes (handles blinking, random looks, etc.)
+  face->Update();
+
+  // Render to OLED
+  u8g2.sendBuffer();
 }
 
 // ============================================================
