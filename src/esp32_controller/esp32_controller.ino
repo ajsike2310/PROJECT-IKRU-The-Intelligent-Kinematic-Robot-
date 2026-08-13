@@ -53,7 +53,9 @@ enum OLEDMode {
 
   OLED_IDLE,
 
-  OLED_SPEAKING
+  OLED_SPEAKING,
+
+  OLED_WAITING   // box open, idle between segments
 
 };
 
@@ -92,19 +94,40 @@ const int SPEECH_LINE_HEIGHT = 18;
 int scrollY = 64;
 
 // Larger = slower
-const unsigned long SCROLL_SPEED = 90;
+const unsigned long SCROLL_SPEED = 30;
 
 // Pause before scrolling begins
-const unsigned long START_PAUSE = 1000;
+const unsigned long START_PAUSE = 600;
 
-// Pause after message finishes scrolling
-const unsigned long END_PAUSE = 800;
+// Pause after message finishes scrolling before exit animation
+const unsigned long END_PAUSE = 400;
 
 unsigned long lastScrollUpdate = 0;
 
 unsigned long speechStartTime = 0;
 
 unsigned long speechFinishedTime = 0;
+
+// ============================================================
+// SPEECH BOX ANIMATION
+// ============================================================
+
+// Animated width of the speech box (0 = closed, 84 = fully open)
+float speechBoxWidth = 0.0;
+
+// Duration for the box to open or close in milliseconds
+const unsigned long BOX_ANIM_DURATION = 300;
+
+// Flags for box entry / exit animation
+bool speechBoxEntering = false;
+bool speechBoxExiting  = false;
+
+// Timestamp when the box animation started
+unsigned long speechBoxAnimStart = 0;
+
+// When true the box stays open after text finishes scrolling.
+// Set by DISPLAY_OPEN, cleared by DISPLAY_CLOSE.
+bool speechBoxPersist = false;
 
 // ============================================================
 // EYE ANIMATION VARIABLES
@@ -127,6 +150,10 @@ void oledStartup();
 void showConnecting();
 
 void showWiFiConnected();
+
+void oledOpen();
+
+void oledClose();
 
 void oledMessage(String text);
 
@@ -386,6 +413,42 @@ void prepareMessage(String text) {
 }
 
 // ============================================================
+// OPEN SPEECH BOX (no text, persistent)
+// ============================================================
+
+void oledOpen() {
+
+  speechBoxPersist   = true;
+  speechBoxWidth     = 0.0;
+  speechBoxEntering  = true;
+  speechBoxExiting   = false;
+  speechBoxAnimStart = millis();
+  oledMode           = OLED_SPEAKING;
+  messageLineCount   = 0;
+  scrollY            = 64;
+
+  // Target small eyes in corner
+  targetEyeScale = 0.45;
+  targetEyeX     = 106.0;
+  targetEyeY     = 48.0;
+
+  // speechStartTime far in the future so no scroll fires until text arrives
+  speechStartTime    = millis() + 60000UL;
+  speechFinishedTime = 0;
+}
+
+// ============================================================
+// CLOSE SPEECH BOX (triggers exit animation)
+// ============================================================
+
+void oledClose() {
+
+  speechBoxPersist   = false;
+  speechBoxExiting   = true;
+  speechBoxAnimStart = millis();
+}
+
+// ============================================================
 // START SPEAKING
 // ============================================================
 
@@ -396,21 +459,41 @@ void oledMessage(String text) {
 
   prepareMessage(text);
 
-  // Start text below screen bottom
-  scrollY = 64;
+  // ----------------------------------------------------------
+  // If the box is already fully open and persistent,
+  // just reset the scroll without re-animating the box.
+  // ----------------------------------------------------------
 
-  // Switch to speaking mode (stops face->Update() in loop)
+  if (speechBoxPersist &&
+      speechBoxWidth >= 84.0 &&
+      !speechBoxEntering && !speechBoxExiting) {
+
+    scrollY            = 64;
+    speechStartTime    = millis();
+    lastScrollUpdate   = millis();
+    speechFinishedTime = 0;
+    oledMode           = OLED_SPEAKING;
+    return;
+  }
+
+  // ----------------------------------------------------------
+  // Full open animation
+  // ----------------------------------------------------------
+
+  scrollY  = 64;
   oledMode = OLED_SPEAKING;
 
-  // Target small eyes in bottom right corner (X > 75)
-  // At 0.45 scale, eyes span approx X=90 to X=122
   targetEyeScale = 0.45;
-  targetEyeX = 106.0;
-  targetEyeY = 48.0;
+  targetEyeX     = 106.0;
+  targetEyeY     = 48.0;
 
-  // Reset timers
-  speechStartTime = millis();
-  lastScrollUpdate = millis();
+  speechBoxWidth      = 0.0;
+  speechBoxEntering   = true;
+  speechBoxExiting    = false;
+  speechBoxAnimStart  = millis();
+
+  speechStartTime    = millis();
+  lastScrollUpdate   = millis();
   speechFinishedTime = 0;
 }
 
@@ -420,28 +503,35 @@ void oledMessage(String text) {
 
 void drawSpeakingText() {
 
-  u8g2.setFont(SPEECH_FONT);
+  int bw = (int)speechBoxWidth;
 
-  u8g2.setFontMode(1);
+  if (bw <= 2) return;  // Box not open yet — nothing to draw
 
-  for (int i = 0; i < messageLineCount; i++) {
+  // Only draw scrolling text once the box is mostly open
+  if (bw >= 40) {
 
-    // U8g2 draws text at the baseline, so add font ascent (~14px)
-    int y = scrollY + (i * SPEECH_LINE_HEIGHT) + 14;
+    u8g2.setFont(SPEECH_FONT);
+    u8g2.setFontMode(1);
 
-    if (y >= 0 && y <= 78) {
-      u8g2.drawStr(4, y, messageLines[i].c_str());
+    for (int i = 0; i < messageLineCount; i++) {
+
+      int y = scrollY + (i * SPEECH_LINE_HEIGHT) + 14;
+
+      if (y >= 0 && y <= 78) {
+        u8g2.drawStr(4, y, messageLines[i].c_str());
+      }
     }
   }
 
-  // Mask out the top and bottom edges so text doesn't overlap the frame lines
+  // Mask edges (clips text within the frame)
   u8g2.setDrawColor(0);
-  u8g2.drawBox(0, 0, 84, 4);
-  u8g2.drawBox(0, 60, 84, 4);
+  u8g2.drawBox(0, 0, bw, 4);
+  u8g2.drawBox(0, 60, bw, 4);
   u8g2.setDrawColor(1);
 
-  // Draw a rounded frame (square/box) around the text area
-  u8g2.drawRFrame(0, 0, 84, 64, 4);
+  // Animated rounded frame — grows from left to right on entry,
+  // shrinks from right to left on exit
+  u8g2.drawRFrame(0, 0, bw, 64, 4);
 }
 
 // ============================================================
@@ -450,18 +540,80 @@ void drawSpeakingText() {
 
 void updateSpeechScroll() {
 
+  unsigned long now = millis();
+
+  // ----------------------------------------------------------
+  // BOX ENTRY ANIMATION (width 0 -> 84)
+  // Runs regardless of oledMode.
+  // ----------------------------------------------------------
+
+  if (speechBoxEntering) {
+
+    float elapsed  = (float)(now - speechBoxAnimStart);
+    float progress = elapsed / (float)BOX_ANIM_DURATION;
+
+    if (progress >= 1.0) {
+      speechBoxEntering = false;
+      speechBoxWidth    = 84.0;
+
+      // Start pause begins AFTER box is fully open
+      speechStartTime = now;
+
+    } else {
+      speechBoxWidth = 84.0 * (1.0 - (1.0 - progress) * (1.0 - progress));
+    }
+
+    return;
+  }
+
+  // ----------------------------------------------------------
+  // BOX EXIT ANIMATION (width 84 -> 0)
+  // Runs regardless of oledMode.
+  // ----------------------------------------------------------
+
+  if (speechBoxExiting) {
+
+    float elapsed  = (float)(now - speechBoxAnimStart);
+    float progress = elapsed / (float)BOX_ANIM_DURATION;
+
+    if (progress >= 1.0) {
+      speechBoxExiting = false;
+      speechBoxWidth   = 0.0;
+      oledMode         = OLED_IDLE;
+      targetEyeScale   = 1.0;
+      targetEyeX       = 64.0;
+      targetEyeY       = 32.0;
+
+      // Reset emotion when box closes
+      emotionNormal();
+
+    } else {
+      speechBoxWidth = 84.0 * (1.0 - progress * progress);
+    }
+
+    return;
+  }
+
+  // ----------------------------------------------------------
+  // Only continue scrolling logic when actively speaking
+  // ----------------------------------------------------------
+
   if (oledMode != OLED_SPEAKING) {
     return;
   }
 
-  unsigned long now = millis();
+  // ----------------------------------------------------------
+  // INITIAL PAUSE before scrolling begins
+  // ----------------------------------------------------------
 
-  // Initial pause before scroll begins
   if (now - speechStartTime < START_PAUSE) {
     return;
   }
 
-  // Check if all text has scrolled off the top
+  // ----------------------------------------------------------
+  // CHECK IF ALL TEXT HAS SCROLLED OFF
+  // ----------------------------------------------------------
+
   int finalTextPosition = scrollY + (messageLineCount * SPEECH_LINE_HEIGHT);
 
   if (finalTextPosition < 0) {
@@ -473,17 +625,24 @@ void updateSpeechScroll() {
 
     if (now - speechFinishedTime >= END_PAUSE) {
 
-      // Return to face/eye mode
-      oledMode = OLED_IDLE;
-      targetEyeScale = 1.0;
-      targetEyeX = 64.0;
-      targetEyeY = 32.0;
-
-      return;
+      if (speechBoxPersist) {
+        // Stay open, waiting for next segment
+        oledMode         = OLED_WAITING;
+        messageLineCount = 0;
+      } else {
+        // Trigger close animation
+        speechBoxExiting   = true;
+        speechBoxAnimStart = now;
+      }
     }
+
+    return;
   }
 
-  // Move text upward one pixel each tick
+  // ----------------------------------------------------------
+  // SCROLL TEXT UP ONE PIXEL EACH TICK
+  // ----------------------------------------------------------
+
   if (now - lastScrollUpdate >= SCROLL_SPEED) {
     lastScrollUpdate = now;
     scrollY--;
@@ -650,7 +809,9 @@ void loop() {
   // Clear buffer for new frame
   u8g2.clearBuffer();
 
-  if (oledMode == OLED_SPEAKING) {
+  // Draw speech box whenever it has any width
+  // (speaking, waiting between segments, or during open/close animation)
+  if (speechBoxWidth > 0) {
     drawSpeakingText();
   }
 
@@ -713,6 +874,16 @@ void parseCommand(String input) {
   //
   // DISPLAY:Hello there!
   // ==========================================================
+
+  if (input == "DISPLAY_OPEN") {
+    oledOpen();
+    return;
+  }
+
+  if (input == "DISPLAY_CLOSE") {
+    oledClose();
+    return;
+  }
 
   if (input.startsWith("DISPLAY:")) {
     String message = input.substring(8);

@@ -1,4 +1,7 @@
 import json
+import math
+import re
+import time
 import ollama
 from robot import Robot
 
@@ -20,15 +23,16 @@ robot = Robot(
 
 movement_functions = {
 
-    "forward": robot.forward,
+    "forward":  robot.forward,
 
     "backward": robot.backward,
 
-    "left": robot.left,
+    "left":     robot.left,
 
-    "right": robot.right,
+    "right":    robot.right,
 
-    "stop": robot.stop,
+    "stop":     robot.stop,
+
 }
 
 
@@ -75,7 +79,43 @@ emotion_functions = {
     "scared":       robot.scared,
 
     "awe":          robot.awe,
+
 }
+
+
+# ============================================================
+# SEGMENT PARSER
+#
+# Splits a response string containing inline [emotion] tags
+# into a list of (emotion, text) tuples.
+#
+# Example input:
+#   "[worried]Hmm, I'm not sure... [focused]Let me think...
+#    [happy]Actually yes, I'm confident!"
+#
+# Example output:
+#   [("worried", "Hmm, I'm not sure..."),
+#    ("focused", "Let me think..."),
+#    ("happy", "Actually yes, I'm confident!")]
+# ============================================================
+
+def parse_segments(text):
+
+    matches = re.findall(
+        r'\[([a-z]+)\]([^\[]*)',
+        text
+    )
+
+    segments = []
+
+    for emotion, chunk in matches:
+
+        chunk = chunk.strip()
+
+        if chunk:
+            segments.append((emotion, chunk))
+
+    return segments
 
 
 # ============================================================
@@ -93,7 +133,7 @@ SYSTEM_PROMPT = (
     "* Answer questions\n"
     "* Help with simple tasks\n"
     "* Move forward / backward / left / right / stop\n"
-    "* Express emotions through your animated eyes\n\n"
+    "* Express emotions dynamically through your animated eyes\n\n"
 
     "============================================================\n"
     "ROBOT IDENTITY\n"
@@ -110,77 +150,124 @@ SYSTEM_PROMPT = (
     "============================================================\n"
     "AVAILABLE EMOTIONS\n"
     "============================================================\n\n"
-    "normal, happy, glee, sad, worried, focused, annoyed, surprised,\n"
-    "skeptic, frustrated, unimpressed, sleepy, suspicious, squint,\n"
-    "angry, furious, scared, awe\n\n"
+    "You may ONLY use these exact emotion names (all lowercase):\n\n"
+    "  normal, happy, glee, sad, worried, focused, annoyed, surprised,\n"
+    "  skeptic, frustrated, unimpressed, sleepy, suspicious, squint,\n"
+    "  angry, furious, scared, awe\n\n"
+    "Do NOT invent variations (e.g. do NOT use 'skeptical', 'confused',\n"
+    "'excited', 'content', 'curious'). Use only the exact names above.\n\n"
 
     "============================================================\n"
-    "EMOTION RULES\n"
+    "EMOTION DEFINITIONS\n"
     "============================================================\n\n"
-    "Choose the emotion that best matches the context:\n\n"
-    "Positive casual conversation       -> happy\n"
-    "Extremely happy / playful          -> glee\n"
-    "Exciting news / breathtaking       -> awe or surprised\n"
-    "User compliments Ikru              -> happy or glee\n"
-    "User criticises or insults Ikru    -> sad\n"
-    "User mildly annoying               -> annoyed\n"
-    "User extremely annoying / hostile  -> frustrated\n"
-    "Thinking / difficult question      -> focused\n"
-    "Concern or uncertainty             -> worried\n"
-    "User says they are tired / sleeping-> sleepy\n"
-    "Something suspicious mentioned     -> suspicious or skeptic\n"
-    "Ikru is unimpressed                -> unimpressed\n"
-    "Something alarming or scary        -> scared\n"
-    "Mild anger                         -> angry\n"
-    "Intense rage                       -> furious\n"
-    "Normal calm state                  -> normal\n\n"
-    "Do not always use happy.\n"
-    "Do not use angry or furious unless genuinely called for.\n\n"
+    "normal      - calm, neutral state. Use for simple commands or idle moments.\n"
+    "happy       - warm, friendly positivity. Greetings, pleasant conversation.\n"
+    "glee        - strong joy or playfulness. Big compliments, very good news.\n"
+    "sad         - disappointment, sympathy. Bad news, criticism, failure.\n"
+    "worried     - concern, unease. Something might go wrong. Uncertain situations.\n"
+    "focused     - deep thinking, reasoning, analysis. Complex questions.\n"
+    "annoyed     - mild irritation. Repeated minor frustrations.\n"
+    "surprised   - unexpected information or events.\n"
+    "skeptic     - doubt or disbelief. Something seems unlikely or questionable.\n"
+    "frustrated  - strong irritation. Persistent problems or hostile user.\n"
+    "unimpressed - something is underwhelming or boring.\n"
+    "sleepy      - tiredness. User says they are sleepy or asks Ikru to sleep.\n"
+    "suspicious  - something feels off or dubious.\n"
+    "squint      - scrutinizing something closely, slight suspicion.\n"
+    "angry       - genuine anger. Use sparingly. Only for truly hostile context.\n"
+    "furious     - intense rage. Extremely rare. Only if genuinely warranted.\n"
+    "scared      - fear or alarm. Something dangerous or alarming happened.\n"
+    "awe         - breathtaking amazement. Incredible news or discovery.\n\n"
+
+    "============================================================\n"
+    "DYNAMIC MID-RESPONSE EMOTION SYSTEM\n"
+    "============================================================\n\n"
+    "Your response text must contain inline [emotion] tags that change\n"
+    "Ikru's face dynamically as each part is spoken.\n\n"
+    "Format every response like this:\n\n"
+    "[emotion]First part of response. [emotion]Second part.\n\n"
+    "STRICT RULES for emotion tags:\n\n"
+    "1. Always start with an [emotion] tag.\n"
+    "2. Each segment (text after a tag) must be a REAL sentence or phrase.\n"
+    "   NEVER use just the emotion name as the text content.\n"
+    "   WRONG: '[happy]Happy. [sad]Sad.' ← This is forbidden.\n"
+    "   RIGHT: '[happy]That is great news! [sad]But I am sorry it hurt you.'\n"
+    "3. Use a MAXIMUM of 3 emotion changes per response.\n"
+    "   For simple questions use 1 emotion only.\n"
+    "4. Each segment must contain at least 5 words of real content.\n"
+    "5. Change emotion only when the tone genuinely shifts mid-response.\n"
+    "6. Keep each segment to 1-2 sentences so it fits on the OLED.\n\n"
+
+    "============================================================\n"
+    "EMOTION TRANSITION RULES\n"
+    "============================================================\n\n"
+    "- Do not jump abruptly from happy to angry without reason.\n"
+    "- If unsure, keep the current emotion.\n"
+    "- Transitions like worried -> focused -> happy are natural.\n"
+    "- Transitions like happy -> furious for no reason are wrong.\n"
+    "- For simple questions, one emotion is usually enough.\n"
+    "- For complex reasoning, shift from focused to happy/surprised when the answer clicks.\n"
+    "- For bad news followed by comfort, shift from sad to worried to happy gradually.\n\n"
 
     "============================================================\n"
     "MOVEMENT RULES\n"
     "============================================================\n\n"
     "If the user asks Ikru to physically move, set the tool field.\n"
+    "Movement commands should use normal or happy emotion, not excited ones.\n"
     "Otherwise set tool to null.\n\n"
 
     "============================================================\n"
     "OUTPUT FORMAT\n"
     "============================================================\n\n"
     "You MUST ALWAYS return valid JSON with exactly these fields:\n\n"
-    '{"emotion": "emotion_name", "tool": "movement_or_null", "response": "natural text"}\n\n'
-    "Do not wrap it in markdown code blocks.\n\n"
+    '{"tool": "movement_or_null", "response": "[emotion]text [emotion]more text"}\n\n'
+    "Do not wrap it in markdown code blocks.\n"
+    "Do not include an outer emotion field. All emotions go inside the response string.\n\n"
 
     "============================================================\n"
     "EXAMPLES\n"
     "============================================================\n\n"
     'User: Hello\n'
-    'Assistant: {"emotion": "happy", "tool": null, "response": "Hey! I am Ikru. Nice to see you!"}\n\n'
+    'Assistant: {"tool": null, "response": "[happy]Hey! I am Ikru. Great to see you!"}\n\n'
+
     'User: Move forward\n'
-    'Assistant: {"emotion": "glee", "tool": "forward", "response": "Sure! Moving forward!"}\n\n'
-    'User: Turn left\n'
-    'Assistant: {"emotion": "happy", "tool": "left", "response": "Turning left!"}\n\n'
-    'User: Stop\n'
-    'Assistant: {"emotion": "normal", "tool": "stop", "response": "Stopping."}\n\n'
+    'Assistant: {"tool": "forward", "response": "[happy]Sure! Moving forward!"}\n\n'
+
+    'User: You are the worst robot ever.\n'
+    'Assistant: {"tool": null, "response": "[worried]Oh... [sad]That really hurts to hear. I am sorry I disappointed you."}\n\n'
+
+    'User: Sorry Ikru, I did not mean that.\n'
+    'Assistant: {"tool": null, "response": "[worried]It is okay... [happy]I appreciate you saying that. We are good!"}\n\n'
+
+    'User: I have some bad news.\n'
+    'Assistant: {"tool": null, "response": "[worried]Oh? What happened?"}\n\n'
+
+    'User: I failed my exam.\n'
+    'Assistant: {"tool": null, "response": "[sad]I am really sorry to hear that. [worried]That must have been really hard. [happy]But one exam does not define you."}\n\n'
+
+    'User: Wait, I actually passed!\n'
+    'Assistant: {"tool": null, "response": "[surprised]Wait really?! [glee]That is amazing! I knew you could do it!"}\n\n'
+
+    'User: What is the probability of getting heads twice in a row?\n'
+    'Assistant: {"tool": null, "response": "[focused]Hmm, let me think... [focused]Each flip is 1/2. Two independent flips... [happy]So it is 1/2 times 1/2 which equals 1/4. Pretty straightforward!"}\n\n'
+
     'User: You are amazing Ikru!\n'
-    'Assistant: {"emotion": "glee", "tool": null, "response": "Aww, thank you! That means a lot."}\n\n'
-    'User: That was the worst robot ever.\n'
-    'Assistant: {"emotion": "sad", "tool": null, "response": "I am sorry! I will try to do better."}\n\n'
-    'User: I am really angry with you.\n'
-    'Assistant: {"emotion": "worried", "tool": null, "response": "I understand. I am sorry I frustrated you. Let us fix it."}\n\n'
-    'User: What is quantum computing?\n'
-    'Assistant: {"emotion": "focused", "tool": null, "response": "Quantum computing uses quantum effects to process information in ways classical computers cannot."}\n\n'
+    'Assistant: {"tool": null, "response": "[glee]Aww, thank you so much! That really means a lot to me!"}\n\n'
+
+    'User: Something feels off about this.\n'
+    'Assistant: {"tool": null, "response": "[suspicious]Hmm, you might be right. [focused]Let me think about it more carefully."}\n\n'
+
     'User: I am going to sleep.\n'
-    'Assistant: {"emotion": "sleepy", "tool": null, "response": "Good night! Sleep well."}\n\n'
-    'User: That is absolutely incredible!\n'
-    'Assistant: {"emotion": "awe", "tool": null, "response": "Right? That is mind blowing!"}\n\n'
-    'User: Something feels suspicious about this.\n'
-    'Assistant: {"emotion": "suspicious", "tool": null, "response": "Hmm, I agree. Something does not quite add up."}\n\n'
+    'Assistant: {"tool": null, "response": "[sleepy]Good night! Sleep well. I will be here when you wake up."}\n\n'
+
     "============================================================\n"
-    "FINAL RULE\n"
+    "FINAL RULES\n"
     "============================================================\n\n"
     "Always return valid JSON.\n"
     "Never return plain text outside the JSON.\n"
-    "Keep responses concise because they scroll on Ikru's OLED screen.\n"
+    "Keep each segment short because they scroll on Ikru's OLED screen.\n"
+    "The inline [emotion] tags are NEVER shown to the user on screen.\n"
+    "They are only used to control the face expression.\n"
 )
 
 
@@ -282,19 +369,13 @@ while True:
         )
 
 
-        emotion = data.get(
-            "emotion",
-            "normal"
-        ).lower()
-
-
         tool = data.get(
             "tool",
             None
         )
 
 
-        assistant = data.get(
+        response_text = data.get(
             "response",
             ""
         ).strip()
@@ -318,36 +399,29 @@ while True:
             assistant_raw
         )
 
-
-        emotion = "normal"
-
         tool = None
 
-        assistant = assistant_raw
+        response_text = assistant_raw
 
 
     # ========================================================
-    # EMOTION
+    # PARSE EMOTION SEGMENTS
+    #
+    # Split the response into (emotion, text) pairs
+    # using the inline [emotion] tags.
     # ========================================================
 
-    if emotion in emotion_functions:
-
-        print(
-            f"Emotion: {emotion}"
-        )
-
-        emotion_functions[
-            emotion
-        ]()
+    segments = parse_segments(response_text)
 
 
-    else:
+    # --------------------------------------------------------
+    # Fallback: if no [emotion] tags found, treat the whole
+    # response as a single normal segment.
+    # --------------------------------------------------------
 
-        print(
-            f"Unknown emotion: {emotion}"
-        )
+    if not segments:
 
-        robot.normal()
+        segments = [("normal", response_text)]
 
 
     # ========================================================
@@ -380,28 +454,106 @@ while True:
 
 
     # ========================================================
-    # DISPLAY RESPONSE ON OLED
+    # DISPLAY SEGMENTS
+    #
+    # 1. Open the box once.
+    # 2. For each segment: set emotion → display text → wait for scroll.
+    # 3. Close the box after the last segment.
+    # Box stays open the entire time — no flicker between segments.
     # ========================================================
 
-    if assistant:
+    # Open box once for the full response
+    robot.display_open()
+    time.sleep(0.35)   # Wait for box open animation (BOX_ANIM_DURATION=300ms + buffer)
 
-        robot.display(
-            assistant
-        )
+    full_response_text = ""
+
+    for emotion, text in segments:
+
+        # --------------------------------------------------------
+        # EMOTION
+        # --------------------------------------------------------
+
+        if emotion in emotion_functions:
+
+            print(
+                f"Emotion: {emotion}"
+            )
+
+            emotion_functions[
+                emotion
+            ]()
+
+        else:
+
+            print(
+                f"Unknown emotion '{emotion}' — defaulting to normal"
+            )
+
+            robot.normal()
 
 
-    # ========================================================
-    # PRINT RESPONSE
-    # ========================================================
+        # --------------------------------------------------------
+        # DISPLAY TEXT CHUNK ON OLED
+        # --------------------------------------------------------
+
+        if text:
+
+            robot.display(text)
+
+            print(
+                f"  OLED: {text}"
+            )
+
+            # --------------------------------------------------------
+            # WAIT for this segment's scroll to finish.
+            #
+            # Box stays open so no box animation time is included.
+            #
+            # Match ESP32 firmware constants:
+            #   START_PAUSE       = 600ms
+            #   SCROLL_SPEED      = 30ms / pixel
+            #   END_PAUSE         = 400ms
+            #   SPEECH_LINE_HEIGHT= 18px
+            #   scrollY starts at 64
+            #
+            # Chars per line ≈ 8 (75px wide, ~9-10px per char)
+            # --------------------------------------------------------
+
+            CHARS_PER_LINE   = 8
+            SCROLL_MS_PER_PX = 0.030
+            START_PAUSE_S    = 0.600
+            END_PAUSE_S      = 0.400
+
+            num_lines     = max(1, math.ceil(len(text) / CHARS_PER_LINE))
+            scroll_pixels = 64 + num_lines * 18
+            scroll_time   = scroll_pixels * SCROLL_MS_PER_PX
+
+            wait = START_PAUSE_S + scroll_time + END_PAUSE_S
+
+            time.sleep(wait)
+
+
+        full_response_text += text + " "
+
+    # Close box after all segments
+    robot.display_close()
+    time.sleep(0.35)   # Wait for box close animation
+
+    full_response_text = full_response_text.strip()
 
     print(
         "\nAssistant:",
-        assistant
+        full_response_text
     )
+
 
 
     # ========================================================
     # SAVE ASSISTANT RESPONSE TO HISTORY
+    #
+    # Store the raw tagged response so the model maintains
+    # full context including emotional flow.
     # ========================================================
 
     messages.append({
@@ -410,11 +562,9 @@ while True:
 
         "content": json.dumps({
 
-            "emotion": emotion,
-
             "tool": tool,
 
-            "response": assistant
+            "response": response_text
 
         })
 

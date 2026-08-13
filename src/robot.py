@@ -158,6 +158,18 @@ class Robot:
         )
 
 
+    def display_open(self):
+        """Open the speech box (persistent mode — stays open until display_close)."""
+
+        self.send("DISPLAY_OPEN")
+
+
+    def display_close(self):
+        """Close the speech box and return to eye mode."""
+
+        self.send("DISPLAY_CLOSE")
+
+
     # ============================================================
     # CLOSE CONNECTION
     # ============================================================
