@@ -4,7 +4,7 @@
             "name": "esp32:esp32:fm-devkit",
             "includePath": [
                 "${workspaceFolder}/**",
-                "C:\\Users\\Avin\\AppData\\Local\\Temp\\vs-arduino-sketch-uSCsKV\\esp32_controller",
+                "C:\\Users\\Avin\\AppData\\Local\\Temp\\vs-arduino-sketch-GXZGfj\\esp32_controller",
                 "C:\\Users\\Avin\\AppData\\Local\\Arduino15\\packages\\esp32\\tools\\esp32-libs\\3.3.11/dio_qspi/include",
                 "C:\\Users\\Avin\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.11\\cores\\esp32",
                 "C:\\Users\\Avin\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.11\\variants\\fm-devkit",

@@ -92,7 +92,7 @@ const int SPEECH_LINE_HEIGHT = 18;
 int scrollY = 64;
 
 // Larger = slower
-const unsigned long SCROLL_SPEED = 120;
+const unsigned long SCROLL_SPEED = 90;
 
 // Pause before scrolling begins
 const unsigned long START_PAUSE = 1000;
@@ -343,7 +343,7 @@ void prepareMessage(String text) {
       testLine = word;
     } else {
       testLine = currentLine + " " + word;
-    }
+    } 
 
     // Word fits
     if (wordFits(testLine, maxWidth)) {
