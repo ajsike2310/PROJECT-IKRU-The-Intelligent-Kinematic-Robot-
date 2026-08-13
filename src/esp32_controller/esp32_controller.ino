@@ -988,7 +988,6 @@ void moveForward() {
   digitalWrite(C2B, LOW);
 
   Serial.println("Moving Forward");
-  oledMessage("Moving Forward");
 }
 
 // ============================================================
@@ -1005,7 +1004,6 @@ void moveBackward() {
   digitalWrite(C2B, HIGH);
 
   Serial.println("Moving Backward");
-  oledMessage("Moving Backward");
 }
 
 // ============================================================
@@ -1022,7 +1020,6 @@ void moveLeft() {
   digitalWrite(C2B, LOW);
 
   Serial.println("Moving Left");
-  oledMessage("Moving Left");
 }
 
 // ============================================================
@@ -1039,7 +1036,6 @@ void moveRight() {
   digitalWrite(C2B, HIGH);
 
   Serial.println("Moving Right");
-  oledMessage("Moving Right");
 }
 
 // ============================================================
