@@ -1,4 +1,5 @@
 import websocket
+import time
 
 
 class Robot:
@@ -25,29 +26,43 @@ class Robot:
     # MOVEMENT
     # ============================================================
 
-    def forward(self):
+    def forward(self, duration=0):
 
         self.send("FORWARD")
+        if duration > 0:
+            time.sleep(duration)
+            self.stop()
 
 
-    def backward(self):
+    def backward(self, duration=0):
 
         self.send("BACKWARD")
+        if duration > 0:
+            time.sleep(duration)
+            self.stop()
 
 
-    def left(self):
+    def left(self, duration=0):
 
         self.send("LEFT")
+        if duration > 0:
+            time.sleep(duration)
+            self.stop()
 
 
-    def right(self):
+    def right(self, duration=0):
 
         self.send("RIGHT")
+        if duration > 0:
+            time.sleep(duration)
+            self.stop()
 
 
-    def stop(self):
+    def stop(self, duration=0):
 
         self.send("STOP")
+        if duration > 0:
+            time.sleep(duration)
 
 
     # ============================================================
@@ -146,6 +161,42 @@ class Robot:
 
         self.send("AWE")
 
+
+    # ============================================================
+    # SPECIAL ACTIONS
+    # ============================================================
+
+    def dance(self):
+        """Perform a cute random dance with motors and eyes."""
+        moves = [
+            ("LEFT", "GLEE", 0.4),
+            ("RIGHT", "HAPPY", 0.4),
+            ("LEFT", "SURPRISED", 0.4),
+            ("RIGHT", "GLEE", 0.4),
+            ("FORWARD", "HAPPY", 0.4),
+            ("BACKWARD", "GLEE", 0.4),
+        ]
+        for move, emotion, duration in moves:
+            self.send(move)
+            self.send(emotion)
+            time.sleep(duration)
+            self.send("STOP")
+        self.send("NORMAL")
+
+    def sing(self):
+        """Sing a song by displaying notes, swaying, and showing emotions."""
+        notes = ["♪", "♫", "♪♪", "♬"]
+        self.display_open()
+        time.sleep(0.3)
+        for i in range(4):
+            self.send("HAPPY" if i % 2 == 0 else "GLEE")
+            self.send("LEFT" if i % 2 == 0 else "RIGHT")
+            self.display(f"   {notes[i]}   ")
+            time.sleep(1.2)
+            self.send("STOP")
+        self.display_close()
+        time.sleep(0.3)
+        self.send("NORMAL")
 
     # ============================================================
     # OLED DISPLAY

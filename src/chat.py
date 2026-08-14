@@ -33,6 +33,10 @@ movement_functions = {
 
     "stop":     robot.stop,
 
+    "dance":    robot.dance,
+
+    "sing":     robot.sing,
+
 }
 
 
@@ -145,7 +149,7 @@ SYSTEM_PROMPT = (
     "============================================================\n"
     "AVAILABLE MOVEMENT TOOLS\n"
     "============================================================\n\n"
-    "forward, backward, left, right, stop\n\n"
+    "forward, backward, left, right, stop, dance, sing\n\n"
 
     "============================================================\n"
     "AVAILABLE EMOTIONS\n"
@@ -212,15 +216,18 @@ SYSTEM_PROMPT = (
     "============================================================\n"
     "MOVEMENT RULES\n"
     "============================================================\n\n"
-    "If the user asks Ikru to physically move, set the tool field.\n"
-    "Movement commands should use normal or happy emotion, not excited ones.\n"
-    "Otherwise set tool to null.\n\n"
+    "If the user asks Ikru to physically move, provide a list of actions in the 'tools' field.\n"
+    "Each action should be an object with 'action' (forward, backward, left, right, stop, dance, sing) and an optional 'duration' (time in seconds).\n"
+    "If no movement is needed, set 'tools' to an empty list [].\n"
+    "Movement commands should use normal or happy emotion, not excited ones.\n\n"
 
     "============================================================\n"
     "OUTPUT FORMAT\n"
     "============================================================\n\n"
     "You MUST ALWAYS return valid JSON with exactly these fields:\n\n"
-    '{"tool": "movement_or_null", "response": "[emotion]text [emotion]more text"}\n\n'
+    '{"tools": [{"action": "movement_name", "duration": seconds}], "response": "[emotion]text [emotion]more text"}\n\n'
+    "If no tools are needed, return an empty list for tools:\n"
+    '{"tools": [], "response": "[emotion]text"}\n\n'
     "Do not wrap it in markdown code blocks.\n"
     "Do not include an outer emotion field. All emotions go inside the response string.\n\n"
 
@@ -228,37 +235,40 @@ SYSTEM_PROMPT = (
     "EXAMPLES\n"
     "============================================================\n\n"
     'User: Hello\n'
-    'Assistant: {"tool": null, "response": "[happy]Hey! I am Ikru. Great to see you!"}\n\n'
+    'Assistant: {"tools": [], "response": "[happy]Hey! I am Ikru. Great to see you!"}\n\n'
 
     'User: Move forward\n'
-    'Assistant: {"tool": "forward", "response": "[happy]Sure! Moving forward!"}\n\n'
+    'Assistant: {"tools": [{"action": "forward", "duration": 0}], "response": "[happy]Sure! Moving forward!"}\n\n'
+
+    'User: Move forward for 5 seconds and backward for 10 seconds\n'
+    'Assistant: {"tools": [{"action": "forward", "duration": 5}, {"action": "backward", "duration": 10}], "response": "[happy]I am on it!"}\n\n'
 
     'User: You are the worst robot ever.\n'
-    'Assistant: {"tool": null, "response": "[worried]Oh... [sad]That really hurts to hear. I am sorry I disappointed you."}\n\n'
+    'Assistant: {"tools": [], "response": "[worried]Oh... [sad]That really hurts to hear. I am sorry I disappointed you."}\n\n'
 
     'User: Sorry Ikru, I did not mean that.\n'
-    'Assistant: {"tool": null, "response": "[worried]It is okay... [happy]I appreciate you saying that. We are good!"}\n\n'
+    'Assistant: {"tools": [], "response": "[worried]It is okay... [happy]I appreciate you saying that. We are good!"}\n\n'
 
     'User: I have some bad news.\n'
-    'Assistant: {"tool": null, "response": "[worried]Oh? What happened?"}\n\n'
+    'Assistant: {"tools": [], "response": "[worried]Oh? What happened?"}\n\n'
 
     'User: I failed my exam.\n'
-    'Assistant: {"tool": null, "response": "[sad]I am really sorry to hear that. [worried]That must have been really hard. [happy]But one exam does not define you."}\n\n'
+    'Assistant: {"tools": [], "response": "[sad]I am really sorry to hear that. [worried]That must have been really hard. [happy]But one exam does not define you."}\n\n'
 
     'User: Wait, I actually passed!\n'
-    'Assistant: {"tool": null, "response": "[surprised]Wait really?! [glee]That is amazing! I knew you could do it!"}\n\n'
+    'Assistant: {"tools": [], "response": "[surprised]Wait really?! [glee]That is amazing! I knew you could do it!"}\n\n'
 
     'User: What is the probability of getting heads twice in a row?\n'
-    'Assistant: {"tool": null, "response": "[focused]Hmm, let me think... [focused]Each flip is 1/2. Two independent flips... [happy]So it is 1/2 times 1/2 which equals 1/4. Pretty straightforward!"}\n\n'
+    'Assistant: {"tools": [], "response": "[focused]Hmm, let me think... [focused]Each flip is 1/2. Two independent flips... [happy]So it is 1/2 times 1/2 which equals 1/4. Pretty straightforward!"}\n\n'
 
     'User: You are amazing Ikru!\n'
-    'Assistant: {"tool": null, "response": "[glee]Aww, thank you so much! That really means a lot to me!"}\n\n'
+    'Assistant: {"tools": [], "response": "[glee]Aww, thank you so much! That really means a lot to me!"}\n\n'
 
     'User: Something feels off about this.\n'
-    'Assistant: {"tool": null, "response": "[suspicious]Hmm, you might be right. [focused]Let me think about it more carefully."}\n\n'
+    'Assistant: {"tools": [], "response": "[suspicious]Hmm, you might be right. [focused]Let me think about it more carefully."}\n\n'
 
     'User: I am going to sleep.\n'
-    'Assistant: {"tool": null, "response": "[sleepy]Good night! Sleep well. I will be here when you wake up."}\n\n'
+    'Assistant: {"tools": [], "response": "[sleepy]Good night! Sleep well. I will be here when you wake up."}\n\n'
 
     "============================================================\n"
     "FINAL RULES\n"
@@ -346,7 +356,9 @@ while True:
 
         model="dolphin3:8b",
 
-        messages=messages
+        messages=messages,
+
+        format="json"
 
     )
 
@@ -369,10 +381,15 @@ while True:
         )
 
 
-        tool = data.get(
-            "tool",
-            None
+        tools = data.get(
+            "tools",
+            []
         )
+
+        # Backwards compatibility if model still uses 'tool'
+        tool = data.get("tool", None)
+        if tool is not None and isinstance(tool, str):
+            tools.append({"action": tool, "duration": 0})
 
 
         response_text = data.get(
@@ -399,7 +416,7 @@ while True:
             assistant_raw
         )
 
-        tool = None
+        tools = []
 
         response_text = assistant_raw
 
@@ -428,28 +445,26 @@ while True:
     # MOVEMENT
     # ========================================================
 
-    if tool is not None:
+    for t in tools:
 
-        tool = str(
-            tool
-        ).lower()
+        action = t.get("action", "").lower()
+        duration = float(t.get("duration", 0))
 
-
-        if tool in movement_functions:
+        if action in movement_functions:
 
             print(
-                f"Executing: {tool}"
+                f"Executing: {action} for {duration}s"
             )
 
-            movement_functions[
-                tool
-            ]()
-
+            if action in ["forward", "backward", "left", "right", "stop"]:
+                movement_functions[action](duration)
+            else:
+                movement_functions[action]()
 
         else:
 
             print(
-                f"Unknown tool: {tool}"
+                f"Unknown action: {action}"
             )
 
 
@@ -562,7 +577,7 @@ while True:
 
         "content": json.dumps({
 
-            "tool": tool,
+            "tools": tools,
 
             "response": response_text
 
