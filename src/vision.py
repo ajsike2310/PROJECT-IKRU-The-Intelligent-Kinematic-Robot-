@@ -141,47 +141,69 @@ class VisionSystem:
             return source.copy()
 
     def _run_stream(self):
-        """Continuous MJPEG HTTP decoding loop."""
+        """Continuous MJPEG HTTP decoding loop with state-change logging and backoff."""
+        reconnect_delay = 2   # seconds; will grow up to 10s on repeated failures
+        was_connected = False  # tracks last known state to suppress log spam
+
         while self.running:
             try:
-                print(f"[Vision] Connecting to camera stream at {self.stream_url}...")
+                if not was_connected:
+                    print(f"[Vision] Connecting to camera stream at {self.stream_url}...")
+
                 req = urllib.request.Request(self.stream_url)
-                stream = urllib.request.urlopen(req, timeout=5)
+                # Longer timeout to handle slow ESP32-CAM boot / WiFi jitter
+                stream = urllib.request.urlopen(req, timeout=15)
                 bytes_buffer = bytes()
-                
+
                 print("[Vision] Stream connected! Analyzing frames...")
+                was_connected = True
+                reconnect_delay = 2  # reset backoff on success
+
                 while self.running:
-                    # Read chunks of the HTTP multipart stream
-                    chunk = stream.read(2048)
+                    # Larger chunks = fewer round-trips; 8192 is safe for MJPEG
+                    chunk = stream.read(8192)
                     if not chunk:
                         break
-                    
+
                     bytes_buffer += chunk
-                    
-                    # Search for JPEG Start Of Image (SOI) and End Of Image (EOI) markers
+
+                    # Keep buffer from growing unbounded (> 1MB means something stalled)
+                    if len(bytes_buffer) > 1_000_000:
+                        bytes_buffer = bytes()
+                        continue
+
+                    # Search for JPEG SOI (0xFFD8) and EOI (0xFFD9) markers
                     a = bytes_buffer.find(b'\xff\xd8')
                     b = bytes_buffer.find(b'\xff\xd9')
-                    
-                    if a != -1 and b != -1:
+
+                    if a != -1 and b != -1 and b > a:
                         # Extract raw JPEG bytes
                         jpg_bytes = bytes_buffer[a:b+2]
-                        # Discard read frame from buffer
+                        # Discard consumed bytes from buffer
                         bytes_buffer = bytes_buffer[b+2:]
-                        
+
+                        # Guard: skip decoding if payload is suspiciously small
+                        if len(jpg_bytes) < 100:
+                            continue
+
                         # Decode JPEG bytes to numpy image
                         frame = cv2.imdecode(
-                            np.frombuffer(jpg_bytes, dtype=np.uint8), 
+                            np.frombuffer(jpg_bytes, dtype=np.uint8),
                             cv2.IMREAD_COLOR
                         )
-                        
+
                         if frame is not None:
                             self._process_frame(frame)
-                            
+
             except Exception as e:
-                print(f"[Vision] Stream error: {e}")
+                if was_connected:
+                    # Only log when we transition from connected → disconnected
+                    print(f"[Vision] Stream lost ({e}). Retrying silently...")
+                    was_connected = False
                 if self.running:
-                    print("[Vision] Reconnecting in 2 seconds...")
-                    time.sleep(2)
+                    time.sleep(reconnect_delay)
+                    # Exponential backoff: 2 → 4 → 8 → 10s max
+                    reconnect_delay = min(reconnect_delay * 2, 10)
 
     def _process_frame(self, frame):
         """Applies face detection, object detection, draws bounding boxes, and displays frame."""
