@@ -13,7 +13,7 @@ from robot import Robot
 # robot = Robot(ip="192.168.1.44")
 
 robot = Robot(
-    ip="10.110.131.144"
+    ip="192.168.1.37"
 )
 
 
@@ -354,7 +354,7 @@ while True:
 
     response = ollama.chat(
 
-        model="dolphin3:8b",
+        model="qwen2.5:3b",
 
         messages=messages,
 
@@ -439,33 +439,6 @@ while True:
     if not segments:
 
         segments = [("normal", response_text)]
-
-
-    # ========================================================
-    # MOVEMENT
-    # ========================================================
-
-    for t in tools:
-
-        action = t.get("action", "").lower()
-        duration = float(t.get("duration", 0))
-
-        if action in movement_functions:
-
-            print(
-                f"Executing: {action} for {duration}s"
-            )
-
-            if action in ["forward", "backward", "left", "right", "stop"]:
-                movement_functions[action](duration)
-            else:
-                movement_functions[action]()
-
-        else:
-
-            print(
-                f"Unknown action: {action}"
-            )
 
 
     # ========================================================
@@ -554,6 +527,34 @@ while True:
     # Close box after all segments
     robot.display_close()
     time.sleep(0.35)   # Wait for box close animation
+
+
+    # ========================================================
+    # MOVEMENT
+    # ========================================================
+
+    for t in tools:
+
+        action = t.get("action", "").lower()
+        duration = float(t.get("duration", 0))
+
+        if action in movement_functions:
+
+            print(
+                f"Executing: {action} for {duration}s"
+            )
+
+            if action in ["forward", "backward", "left", "right", "stop"]:
+                movement_functions[action](duration)
+            else:
+                movement_functions[action]()
+
+        else:
+
+            print(
+                f"Unknown action: {action}"
+            )
+
 
     full_response_text = full_response_text.strip()
 

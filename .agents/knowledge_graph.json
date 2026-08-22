@@ -1,0 +1,214 @@
+{
+  "project_name": "PROJECT IKRU",
+  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets.",
+  "architecture": {
+    "host_pc": {
+      "language": "Python 3.x",
+      "modules": {
+        "chat.py": {
+          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, and dispatches them to robot.py.",
+          "dependencies": [
+            "robot.py",
+            "ollama",
+            "json",
+            "re",
+            "math",
+            "time"
+          ],
+          "functions": [
+            {
+              "name": "parse_segments",
+              "inputs": ["text: str"],
+              "outputs": ["list of (emotion: str, text: str) tuples"],
+              "description": "Splits a response string containing inline [emotion] tags into individual segments for display on the OLED."
+            }
+          ]
+        },
+        "robot.py": {
+          "purpose": "WebSocket controller client that provides a Python API to send movement, emotion, and text display commands directly to the ESP32 WebSocket server.",
+          "dependencies": [
+            "websocket",
+            "time"
+          ],
+          "classes": {
+            "Robot": {
+              "description": "Encapsulates the WebSocket connection and command sending methods.",
+              "methods": [
+                {
+                  "name": "__init__",
+                  "inputs": ["ip: str"],
+                  "description": "Establishes a WebSocket connection to the ESP32 at ws://{ip}:81."
+                },
+                {
+                  "name": "send",
+                  "inputs": ["cmd: str"],
+                  "description": "Sends a plain text command to the ESP32 and prints the acknowledgement reply."
+                },
+                {
+                  "name": "forward",
+                  "inputs": ["duration: float = 0"],
+                  "description": "Sends FORWARD command to ESP32. Stops after duration if duration > 0."
+                },
+                {
+                  "name": "backward",
+                  "inputs": ["duration: float = 0"],
+                  "description": "Sends BACKWARD command to ESP32. Stops after duration if duration > 0."
+                },
+                {
+                  "name": "left",
+                  "inputs": ["duration: float = 0"],
+                  "description": "Sends LEFT command to ESP32 (pivot left). Stops after duration if duration > 0."
+                },
+                {
+                  "name": "right",
+                  "inputs": ["duration: float = 0"],
+                  "description": "Sends RIGHT command to ESP32 (pivot right). Stops after duration if duration > 0."
+                },
+                {
+                  "name": "stop",
+                  "inputs": ["duration: float = 0"],
+                  "description": "Sends STOP command to ESP32 (coasts motors)."
+                },
+                {
+                  "name": "display",
+                  "inputs": ["text: str"],
+                  "description": "Sends DISPLAY:<text> to display text on OLED."
+                },
+                {
+                  "name": "display_open",
+                  "inputs": [],
+                  "description": "Sends DISPLAY_OPEN command to open speech box on OLED."
+                },
+                {
+                  "name": "display_close",
+                  "inputs": [],
+                  "description": "Sends DISPLAY_CLOSE command to close speech box and return to eye animations."
+                },
+                {
+                  "name": "dance",
+                  "inputs": [],
+                  "description": "Runs a pre-defined sequence of movements and emotion/expression commands."
+                },
+                {
+                  "name": "sing",
+                  "inputs": [],
+                  "description": "Sways left/right, changes emotions, and displays musical note symbols on the screen."
+                },
+                {
+                  "name": "close",
+                  "inputs": [],
+                  "description": "Closes the WebSocket connection."
+                },
+                {"name": "normal", "inputs": [], "description": "Sets eye expression to NORMAL."},
+                {"name": "happy", "inputs": [], "description": "Sets eye expression to HAPPY."},
+                {"name": "glee", "inputs": [], "description": "Sets eye expression to GLEE."},
+                {"name": "sad", "inputs": [], "description": "Sets eye expression to SAD."},
+                {"name": "worried", "inputs": [], "description": "Sets eye expression to WORRIED."},
+                {"name": "focused", "inputs": [], "description": "Sets eye expression to FOCUSED."},
+                {"name": "annoyed", "inputs": [], "description": "Sets eye expression to ANNOYED."},
+                {"name": "surprised", "inputs": [], "description": "Sets eye expression to SURPRISED."},
+                {"name": "skeptic", "inputs": [], "description": "Sets eye expression to SKEPTIC."},
+                {"name": "frustrated", "inputs": [], "description": "Sets eye expression to FRUSTRATED."},
+                {"name": "unimpressed", "inputs": [], "description": "Sets eye expression to UNIMPRESSED."},
+                {"name": "sleepy", "inputs": [], "description": "Sets eye expression to SLEEPY."},
+                {"name": "suspicious", "inputs": [], "description": "Sets eye expression to SUSPICIOUS."},
+                {"name": "squint", "inputs": [], "description": "Sets eye expression to SQUINT."},
+                {"name": "angry", "inputs": [], "description": "Sets eye expression to ANGRY."},
+                {"name": "furious", "inputs": [], "description": "Sets eye expression to FURIOUS."},
+                {"name": "scared", "inputs": [], "description": "Sets eye expression to SCARED."},
+                {"name": "awe", "inputs": [], "description": "Sets eye expression to AWE."}
+              ]
+            }
+          }
+        },
+        "test_robot.py": {
+          "purpose": "A diagnostics script to test raw WebSocket connections and direct DISPLAY commands."
+        },
+        "test_socket.py": {
+          "purpose": "A diagnostics script to test TCP connectivity to the ESP32 on port 81."
+        }
+      }
+    },
+    "esp32_firmware": {
+      "language": "Arduino C++",
+      "modules": {
+        "esp32_controller.ino": {
+          "purpose": "Main firmware file that runs a WebSocket server on port 81, parses incoming commands, controls L293D motor driver GPIOs, handles speech scroll on SSD1306 OLED, and coordinates eye rendering.",
+          "dependencies": [
+            "Face.h",
+            "WebSocketsServer.h",
+            "WiFi.h",
+            "Wire.h"
+          ],
+          "pin_configurations": {
+            "EN1": 13,
+            "EN2": 33,
+            "C1A": 26,
+            "C1B": 27,
+            "C2A": 14,
+            "C2B": 12,
+            "SDA": 21,
+            "SCL": 22
+          },
+          "functions": [
+            {
+              "name": "parseCommand",
+              "inputs": ["input: String"],
+              "description": "Parses commands for OLED display control, 18 emotions, and 5 motor movements."
+            },
+            {
+              "name": "prepareMessage",
+              "inputs": ["text: String"],
+              "description": "Wraps input text to fit the 75px wide OLED speech box boundaries without splitting words."
+            },
+            {
+              "name": "updateSpeechScroll",
+              "inputs": [],
+              "description": "Updates animations for speech box opening, text scrolling, and speech box closing."
+            },
+            {
+              "name": "drawSpeakingText",
+              "inputs": [],
+              "description": "Draws speech box frame and lines of text inside the visible box area."
+            },
+            {
+              "name": "moveForward",
+              "inputs": [],
+              "description": "Sets L293D GPIOs for forward motion."
+            },
+            {
+              "name": "moveBackward",
+              "inputs": [],
+              "description": "Sets L293D GPIOs for backward motion."
+            },
+            {
+              "name": "moveLeft",
+              "inputs": [],
+              "description": "Sets L293D GPIOs for left pivot spin."
+            },
+            {
+              "name": "moveRight",
+              "inputs": [],
+              "description": "Sets L293D GPIOs for right pivot spin."
+            },
+            {
+              "name": "stopMotors",
+              "inputs": [],
+              "description": "Disables motor enable pins to stop movements."
+            }
+          ]
+        },
+        "esp32-eyes": {
+          "purpose": "A dynamic eye animation library using U8g2.",
+          "components": {
+            "Face": "Manages face state, active expressions, and blink timers.",
+            "Eye": "Encapsulates size, position, scale, and interpolation for a single eye.",
+            "FaceExpression": "Implements transition logic for 18 custom expressions (Normal, Happy, Focused, etc.).",
+            "EyeDrawer": "Handles low-level rendering shapes on SSD1306 OLED screen.",
+            "Animations": "Interpolates scaling and coordinate changes smoothly over frames."
+          }
+        }
+      }
+    }
+  }
+}

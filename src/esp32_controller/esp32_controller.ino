@@ -24,8 +24,8 @@
 // WIFI
 // ============================================================
 
-const char *ssid = "AJx24";
-const char *password = "avin1236";
+const char *ssid = "GNXS-2.4G-C457E1";
+const char *password = "1234567890";
 
 WebSocketsServer webSocket(81);
 
