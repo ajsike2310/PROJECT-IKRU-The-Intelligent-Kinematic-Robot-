@@ -1,14 +1,15 @@
 {
   "project_name": "PROJECT IKRU",
-  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets.",
+  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets, with camera vision enabled by an ESP32-CAM.",
   "architecture": {
     "host_pc": {
       "language": "Python 3.x",
       "modules": {
         "chat.py": {
-          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, and dispatches them to robot.py.",
+          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, injects dynamic camera visual context, and dispatches them to robot.py.",
           "dependencies": [
             "robot.py",
+            "vision.py",
             "ollama",
             "json",
             "re",
@@ -23,6 +24,43 @@
               "description": "Splits a response string containing inline [emotion] tags into individual segments for display on the OLED."
             }
           ]
+        },
+        "vision.py": {
+          "purpose": "Decodes HTTP MJPEG streams from ESP32-CAM and runs thread-safe background face detection (Haar Cascade) and object detection (MobileNet-SSD).",
+          "dependencies": [
+            "cv2",
+            "numpy",
+            "urllib",
+            "threading",
+            "time"
+          ],
+          "classes": {
+            "VisionSystem": {
+              "description": "Handles stream reading, OpenCV image processing, and bounding box rendering.",
+              "methods": [
+                {
+                  "name": "__init__",
+                  "inputs": ["cam_ip: str", "show_window: bool = True"],
+                  "description": "Initializes OpenCV classifiers and DNN parameters."
+                },
+                {
+                  "name": "start",
+                  "inputs": [],
+                  "description": "Spawns background capture thread."
+                },
+                {
+                  "name": "stop",
+                  "inputs": [],
+                  "description": "Shuts down background thread and destroys windows."
+                },
+                {
+                  "name": "get_latest_detections",
+                  "inputs": [],
+                  "description": "Thread-safe retrieval of face count and detected object labels."
+                }
+              ]
+            }
+          }
         },
         "robot.py": {
           "purpose": "WebSocket controller client that provides a Python API to send movement, emotion, and text display commands directly to the ESP32 WebSocket server.",
@@ -133,7 +171,7 @@
       "language": "Arduino C++",
       "modules": {
         "esp32_controller.ino": {
-          "purpose": "Main firmware file that runs a WebSocket server on port 81, parses incoming commands, controls L293D motor driver GPIOs, handles speech scroll on SSD1306 OLED, and coordinates eye rendering.",
+          "purpose": "Main body firmware file that runs a WebSocket server on port 81, parses incoming commands, controls L293D motor driver GPIOs, handles speech scroll on SSD1306 OLED, and coordinates eye rendering.",
           "dependencies": [
             "Face.h",
             "WebSocketsServer.h",
@@ -195,6 +233,31 @@
               "name": "stopMotors",
               "inputs": [],
               "description": "Disables motor enable pins to stop movements."
+            }
+          ]
+        },
+        "esp32_cam.ino": {
+          "purpose": "ESP32-CAM firmware that captures OV2640 frames and hosts low-latency MJPEG video streaming server on port 80.",
+          "dependencies": [
+            "esp_camera.h",
+            "WiFi.h",
+            "esp_http_server.h"
+          ],
+          "functions": [
+            {
+              "name": "index_handler",
+              "inputs": ["req: httpd_req_t*"],
+              "description": "Serves responsive HTML stream viewer page."
+            },
+            {
+              "name": "capture_handler",
+              "inputs": ["req: httpd_req_t*"],
+              "description": "Captures and serves a single JPEG snapshot."
+            },
+            {
+              "name": "stream_handler",
+              "inputs": ["req: httpd_req_t*"],
+              "description": "Streams continuous JPEG images as multipart/x-mixed-replace MJPEG feed."
             }
           ]
         },

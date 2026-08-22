@@ -104,7 +104,8 @@
 
 | Component | Model | Quantity | Purpose |
 |---|---|---|---|
-| **Microcontroller** | ESP32-WROOM-32 DevKit | 1 | Main controller, Wi-Fi, WebSocket server |
+| **Microcontroller** | ESP32-WROOM-32 DevKit | 1 | Body controller: Wi-Fi, WebSocket server, OLED, motors |
+| **Camera Controller** | AI-Thinker ESP32-CAM | 1 | Vision eyes: Wi-Fi, captures and streams live frames |
 | **Motor Driver** | L293D Module | 1 | Drives both DC motors |
 | **DC Motors** | TT Gear Motors (3–6V) | 2 | Left and right wheel drive |
 | **Chassis** | 2WD Robot Chassis | 1 | Physical robot frame |
@@ -174,9 +175,13 @@ PROJECT-IKRU/
     ├── __init__.py                    # Package initializer
     ├── robot.py                       # Robot WebSocket client class
     ├── chat.py                        # AI chat loop & LLM integration
+    ├── vision.py                      # PC-side vision pipeline (face/object)
     │
-    └── esp32_controller/              # Arduino firmware
-        └── esp32_controller.ino       # ESP32 WebSocket server + motor control
+    ├── esp32_controller/              # Body Arduino firmware
+    │   └── esp32_controller.ino       # WebSocket server + motor/OLED control
+    │
+    └── esp32_cam/                     # Camera Arduino firmware
+        └── esp32_cam.ino              # Low-latency MJPEG video server
 ```
 
 ### File Descriptions
@@ -229,27 +234,36 @@ Runs on the ESP32. Connects to Wi-Fi, starts a WebSocket server on **port 81**, 
 
 ### 1. ESP32 Firmware
 
+#### ESP32 #1: Body Controller
 **Step 1:** Install the required Arduino library:
 - Open Arduino IDE → **Sketch → Include Library → Manage Libraries**
-- Search for **`WebSockets`** by Markus Sattler and install it
+- Search for **`WebSockets`** by Markus Sattler and install it.
 
-**Step 2:** Update Wi-Fi credentials in `esp32_controller.ino`:
+**Step 2:** Update Wi-Fi credentials in `src/esp32_controller/esp32_controller.ino`:
 ```cpp
 const char* ssid     = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 ```
 
-**Step 3:** Flash the firmware:
+**Step 3:** Flash the firmware to your Body Controller ESP32:
 - Select board: **ESP32 Dev Module**
-- Select correct COM port
-- Click **Upload**
+- Select the correct COM port and click **Upload**.
+- Note the IP address from the Serial Monitor (e.g., `192.168.1.37`).
 
-**Step 4:** Open Serial Monitor at `115200` baud. Note the IP address printed:
+#### ESP32 #2: ESP32-CAM (Eyes)
+**Step 1:** Open `src/esp32_cam/esp32_cam.ino` in Arduino IDE.
+
+**Step 2:** Update Wi-Fi credentials:
+```cpp
+const char *ssid = "YOUR_WIFI_SSID";
+const char *password = "YOUR_WIFI_PASSWORD";
 ```
-Connected!
-IP Address: 192.168.1.44
-WebSocket Server Started
-```
+
+**Step 3:** Flash the firmware to your ESP32-CAM:
+- Select board: **AI Thinker ESP32-CAM**
+- Select the correct COM port and click **Upload**.
+- Open the Serial Monitor and note the Camera IP address (e.g., `192.168.1.38`).
+- Verify the stream by visiting `http://<CAMERA_IP>/` in your browser.
 
 ---
 
@@ -269,8 +283,8 @@ python -m venv .venv
 # Activate (Linux/macOS)
 source .venv/bin/activate
 
-# Install dependencies
-pip install websocket-client ollama
+# Install dependencies (including OpenCV for the vision pipeline)
+pip install websocket-client ollama opencv-python
 ```
 
 ---
@@ -279,8 +293,8 @@ pip install websocket-client ollama
 
 ```bash
 # Install Ollama from https://ollama.ai/
-# Then pull the phi3 model used by IKRU:
-ollama pull phi3:3.8b-mini-4k-instruct-q4_K_M
+# Then pull the Qwen model used by IKRU:
+ollama pull qwen2.5:3b
 
 # Verify it is available:
 ollama list
@@ -292,9 +306,13 @@ ollama list
 
 ### 4. Running the Robot
 
-**Step 1:** Update the IP address in `src/chat.py` to match your ESP32's IP:
+**Step 1:** Update the IP addresses in `src/chat.py` to match both of your ESP32 boards:
 ```python
-robot = Robot(ip="192.168.1.44")  # Change this to your ESP32's IP
+# Set the Body Controller IP
+robot = Robot(ip="192.168.1.37")
+
+# Set the Camera IP (or set to None to run without vision)
+CAM_IP = "192.168.1.38"
 ```
 
 **Step 2:** Make sure Ollama is running:

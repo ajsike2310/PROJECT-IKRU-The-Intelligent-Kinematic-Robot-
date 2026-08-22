@@ -14,53 +14,100 @@ Once you have processed this context, wait for my brainstorming ideas to help me
 ---
 
 ## 1. Project Overview & Architecture
-IKRU is a desk companion robot that reads natural language commands, processes them locally using an offline Large Language Model (via Ollama), maps commands to movement tools or animated eye expressions, and sends them via WebSocket to an ESP32 microcontroller. The ESP32 drives two DC motors via an L293D motor driver and renders expressions/scrolling text on an SSD1306 128x64 OLED display.
+IKRU is a desk companion robot that reads natural language commands, processes them locally using an offline Large Language Model (via Ollama), maps commands to movement tools or animated eye expressions, and sends them via WebSocket to an ESP32 microcontroller. 
+
+### Dual Microcontroller Setup
+To balance low-latency visual capture and real-time motor control, IKRU utilizes two independent ESP32 microcontrollers coordinated by a central PC "brain":
+1. **ESP32 #1 — BODY CONTROLLER:** Runs a WebSocket server to control physical locomotion (two DC motors driven by an L293D motor driver) and displays animated eyes and scrolling text on an SSD1306 128x64 OLED display.
+2. **ESP32 #2 — EYES (ESP32-CAM):** Runs an HTTP server to capture live JPEG frames from an OV2640 camera sensor and streams them as an MJPEG feed over the local network to the PC.
 
 ### System Architecture Flow
 1. **User Input:** The user types a natural language prompt in the PC terminal.
-2. **Local LLM (Ollama):** The Python client sends the conversation history to Ollama running `qwen2.5:3b` with a custom system prompt.
-3. **Structured Response:** The LLM returns a structured JSON object containing:
+2. **Video Capture & Vision (PC):** The PC runs `vision.py` in a background thread to decode the ESP32-CAM MJPEG stream. It performs face detection (OpenCV Haar Cascade) and object detection (MobileNet-SSD via OpenCV DNN module) in real time.
+3. **Local LLM (Ollama):** The Python client (`chat.py`) dynamically injects what IKRU currently sees (faces and objects) into a temporary system context message. It sends the conversation history + visual context to Ollama running `qwen2.5:3b` in JSON mode.
+4. **Structured Response:** The LLM returns a structured JSON object containing:
    - `tools`: A list of movement actions (e.g. `forward`, `backward`, `left`, `right`, `stop`, `dance`, `sing`) and their durations.
    - `response`: Text to be displayed on the OLED screen with inline `[emotion]` tags (e.g., `"[happy]Hello! [worried]Is something wrong?"`).
-4. **Python Parser (chat.py):** Parses the JSON, splits the text into (emotion, text) segments, and invokes the WebSocket client.
-5. **WebSocket Transmission:** The Python client connects to the ESP32 WebSocket Server (`ws://<ESP32_IP>:81`) and sends plain text instructions sequentially.
-6. **Microcontroller execution (ESP32):**
-   - **Display:** Animates the OLED screen. It draws eyes in IDLE mode, or opens a speech box and scrolls text in SPEAKING mode.
-   - **Motors:** Controls the L293D motor driver GPIO pins to drive DC gear motors.
-   - **Acknowledgement:** Replies with `"OK"` to acknowledge receipt of each instruction.
+5. **Python Parser (chat.py):** Parses the JSON, splits the text into (emotion, text) segments, updates the eye expressions on the body OLED, and triggers movement commands.
+6. **Body Execution (ESP32-Body):** Receives text commands via WebSocket (`ws://<BODY_IP>:81`), adjusts GPIO pins for motor control, and animates/scrolls the OLED display.
+
+```
+                                 HUMAN
+                                   │
+                              Text / Voice
+                                   │
+                                   ▼
+                ┌──────────────────────────────────┐
+                │          YOUR COMPUTER           │
+                │             RTX 4060             │
+                │                                  │
+                │    Ollama (qwen2.5:3b)           │
+                │    chat.py (Controller Loop)     │
+                │    vision.py (Vision System)     │
+                └───────┬──────────────────┬───────┘
+                        │                  ▲
+               Wi-Fi    │                  │   Wi-Fi
+            (WebSocket) │                  │ (HTTP/MJPEG)
+               Port 81  │                  │   Port 80
+                        ▼                  │
+         ┌─────────────────────────┐       │
+         │   ESP32 #1 — BODY       │       │
+         │                         │       │
+         │   WebSocket Server      │       │
+         │   parseCommand()        │       │
+         │   L293D Motor Driver    │       │
+         │   SSD1306 OLED (Eyes)   │       │
+         └─────┬─────────────┬─────┘       │
+               │             │             │
+               ▼             ▼             │
+          ┌─────────┐   ┌─────────┐        │
+          │ Motor L │   │ Motor R │        │
+          └─────────┘   └─────────┘        │
+                                           │
+         ┌─────────────────────────────────┴┐
+         │   ESP32 #2 — EYES (ESP32-CAM)    │
+         │                                  │
+         │   OV2640 Sensor                  │
+         │   HTTP Stream Server             │
+         └──────────────────────────────────┘
+```
 
 ---
 
 ## 2. Directory Structure
 ```text
 PROJECT-IKRU/
-├── README.md                          # Technical overview and hardware wiring
+├── README.md                          # Technical overview and installation instructions
+├── master_project_prompt.md           # You are here (complete master context)
 ├── src/                               # Main Python application
 │   ├── __init__.py                    # Package initializer
 │   ├── robot.py                       # Robot WebSocket client class
-│   ├── chat.py                        # AI chat loop & LLM integration
+│   ├── chat.py                        # AI chat loop & LLM integration (Ollama + Vision)
+│   ├── vision.py                      # PC-side vision pipeline (Haar Face + MobileNet SSD)
 │   ├── test_robot.py                  # Direct websocket testing script
 │   ├── test_socket.py                 # TCP port connectivity test
 │   │
-│   └── esp32_controller/              # ESP32 Arduino firmware
-│       ├── esp32_controller.ino       # Core WebSocket server & hardware control
-│       ├── Animations.h               # Keyframe animations for eye movements
-│       ├── AsyncTimer.h/AsyncTimer.cpp # Helper for async timing / non-blocking blinks
-│       ├── Common.h                   # Globals and OLED references
-│       ├── Eye.h/Eye.cpp              # Eye dimensions, pupil/cornea scaling
-│       ├── EyeDrawer.h                # Low-level eye rendering code
-│       ├── EyePresets.h               # Coordinates and values for expressions
-│       ├── Face.h/Face.cpp            # Facial animation state coordinator
-│       ├── FaceEmotions.hpp           # Enum defining the 18 active expressions
-│       ├── FaceExpression.h/FaceExpression.cpp # Emotion transition logic
-│       ├── LookAssistant.h/LookAssistant.cpp # Helper for random gaze movements
-│       └── EyeBlink.h/EyeBlink.cpp / EyeVariation.h/EyeVariation.cpp / etc.
+│   ├── esp32_controller/              # Body Arduino firmware
+│   │   ├── esp32_controller.ino       # Body WebSocket server + motor/OLED control
+│   │   ├── Animations.h               # Keyframe animations for eye movements
+│   │   ├── AsyncTimer.h/AsyncTimer.cpp # Helper for async timing / non-blocking blinks
+│   │   ├── Common.h                   # Globals and OLED references
+│   │   ├── Eye.h/Eye.cpp              # Eye dimensions, pupil/cornea scaling
+│   │   ├── EyeDrawer.h                # Low-level eye rendering code
+│   │   ├── EyePresets.h               # Coordinates and values for expressions
+│   │   ├── Face.h/Face.cpp            # Facial animation state coordinator
+│   │   ├── FaceEmotions.hpp           # Enum defining the 18 active expressions
+│   │   ├── FaceExpression.h/FaceExpression.cpp # Emotion transition logic
+│   │   └── LookAssistant.h/LookAssistant.cpp # Helper for random gaze movements
+│   │
+│   └── esp32_cam/                     # Camera Arduino firmware
+│       └── esp32_cam.ino              # Low-latency MJPEG video server
 ```
 
 ---
 
 ## 3. Hardware Pin Mapping & Truth Table
-### Pin Wiring
+### Body Controller Pin Wiring
 * **EN1** (GPIO 13) → Enable Left Motor (M1)
 * **EN2** (GPIO 33) → Enable Right Motor (M2) *(Note: GPIO 34 is input-only, do not use it for EN)*
 * **C1A** (GPIO 26) → Left Motor Direction Pin A
@@ -77,7 +124,7 @@ PROJECT-IKRU/
 
 ---
 
-## 4. Communication Protocol (PC ↔ ESP32)
+## 4. Communication Protocol (PC ↔ ESP32-Body)
 Communication occurs over a raw WebSocket on port 81. All commands sent to the ESP32 are plain text. The ESP32 is case-insensitive (converts incoming text to uppercase) and trims whitespace. The ESP32 replies with `"OK"` after executing each command.
 
 | Command | Action |
@@ -207,10 +254,153 @@ class Robot:
         self.ws.close()
 ```
 
-### B. LLM Main Controller Loop (`src/chat.py`)
-This file is the core intelligence loop. It uses `ollama` to run queries against `qwen2.5:3b` in JSON mode. The system prompt instructs the LLM to format its response with a `tools` array (for physical movement tasks) and a `response` string (for speaking). 
+### B. PC Vision Pipeline (`src/vision.py`)
+This script decodes the HTTP MJPEG stream from the ESP32-CAM using a raw byte reader to bypass caching latencies. It applies Haar Cascade face detection and MobileNet-SSD object detection (via OpenCV DNN) in a thread-safe background process:
 
-The LLM inserts inline `[emotion]` tags into the speech response. `chat.py` extracts these segments, updates the eye expressions on the fly, handles the scrolling duration pauses, and runs the movement tools:
+```python
+import os
+import sys
+import time
+import threading
+import urllib.request
+import numpy as np
+import cv2
+
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+PROTOTXT_PATH = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.prototxt")
+MODEL_PATH = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.caffemodel")
+
+PROTOTXT_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/MobileNetSSD_deploy.prototxt"
+MODEL_URL = "https://github.com/chuanqi305/MobileNet-SSD/raw/master/MobileNetSSD_deploy.caffemodel"
+
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+           "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+           "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+           "sofa", "train", "tvmonitor"]
+
+COLORS = np.random.uniform(100, 255, size=(len(CLASSES), 3))
+
+def download_models_if_needed():
+    try:
+        if not os.path.exists(MODEL_DIR):
+            os.makedirs(MODEL_DIR)
+        if not os.path.exists(PROTOTXT_PATH):
+            print("[Vision] Downloading MobileNet-SSD prototxt...")
+            urllib.request.urlretrieve(PROTOTXT_URL, PROTOTXT_PATH)
+        if not os.path.exists(MODEL_PATH):
+            print("[Vision] Downloading MobileNet-SSD weights...")
+            opener = urllib.request.build_opener()
+            opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
+            urllib.request.install_opener(opener)
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        return True
+    except Exception as e:
+        print(f"[Vision] Could not download models: {e}. Face-only mode active.")
+        return False
+
+class VisionSystem:
+    def __init__(self, cam_ip, show_window=True):
+        self.ip = cam_ip
+        self.stream_url = f"http://{cam_ip}/stream"
+        self.show_window = show_window
+        self.running = False
+        self.thread = None
+        self.latest_frame = None
+        self.faces_count = 0
+        self.detected_objects = []
+        self.lock = threading.Lock()
+        
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+        
+        self.dnn_active = False
+        if download_models_if_needed():
+            try:
+                self.net = cv2.dnn.readNetFromCaffe(PROTOTXT_PATH, MODEL_PATH)
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                self.dnn_active = True
+            except Exception as e:
+                print(f"[Vision] Failed to load network: {e}")
+        
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._run_stream, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+        cv2.destroyAllWindows()
+
+    def get_latest_detections(self):
+        with self.lock:
+            return self.faces_count, list(self.detected_objects)
+
+    def _run_stream(self):
+        while self.running:
+            try:
+                req = urllib.request.Request(self.stream_url)
+                stream = urllib.request.urlopen(req, timeout=5)
+                bytes_buffer = bytes()
+                while self.running:
+                    chunk = stream.read(2048)
+                    if not chunk:
+                        break
+                    bytes_buffer += chunk
+                    a = bytes_buffer.find(b'\xff\xd8')
+                    b = bytes_buffer.find(b'\xff\xd9')
+                    if a != -1 and b != -1:
+                        jpg_bytes = bytes_buffer[a:b+2]
+                        bytes_buffer = bytes_buffer[b+2:]
+                        frame = cv2.imdecode(np.frombuffer(jpg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            self._process_frame(frame)
+            except Exception as e:
+                print(f"[Vision] Stream error: {e}")
+                if self.running:
+                    time.sleep(2)
+
+    def _process_frame(self, frame):
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(30, 30))
+        
+        objects = []
+        if self.dnn_active:
+            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
+            self.net.setInput(blob)
+            detections = self.net.forward()
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:
+                    class_idx = int(detections[0, 0, i, 1])
+                    class_label = CLASSES[class_idx]
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    (startX, startY, endX, endY) = box.astype("int")
+                    objects.append(class_label)
+                    color = COLORS[class_idx]
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
+                    cv2.putText(frame, class_label, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        for (x, y, fw, fh) in faces:
+            cv2.rectangle(frame, (x, y), (x + fw, y + fh), (255, 0, 255), 2)
+            cv2.putText(frame, "Face", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+        with self.lock:
+            self.faces_count = len(faces)
+            self.detected_objects = list(set(objects))
+            
+        if self.show_window:
+            cv2.imshow("IKRU Eyes - Live Stream", frame)
+            cv2.waitKey(1)
+        self.latest_frame = frame
+```
+
+### C. LLM Controller Loop (`src/chat.py`)
+Connects to the body controller, optional camera vision thread, and queries the local Ollama LLM. It maps system messages containing active camera feeds (faces, objects) directly to the prompt context dynamically:
 
 ```python
 import json
@@ -219,17 +409,26 @@ import re
 import time
 import ollama
 from robot import Robot
+from vision import VisionSystem
 
-# Initialize connection
+# Initialize connections
 robot = Robot(ip="192.168.1.37")
 
+# Change this to your ESP32-CAM IP to activate live vision, or None to run without camera
+CAM_IP = None  
+
+vision = None
+if CAM_IP is not None:
+    try:
+        vision = VisionSystem(cam_ip=CAM_IP, show_window=True)
+        vision.start()
+        print("[Vision] Camera system successfully loaded!")
+    except Exception as e:
+        print(f"[Vision] Could not start camera system: {e}")
+
 movement_functions = {
-    "forward":  robot.forward,
-    "backward": robot.backward,
-    "left":     robot.left,
-    "right":    robot.right,
-    "stop":     robot.stop,
-    "dance":    robot.dance,
+    "forward":  robot.forward, "backward": robot.backward, "left": robot.left,
+    "right":    robot.right,   "stop":     robot.stop,     "dance":   robot.dance,
     "sing":     robot.sing,
 }
 
@@ -243,7 +442,6 @@ emotion_functions = {
 }
 
 def parse_segments(text):
-    # Extracts "[happy]Hello [sad]World" into [("happy", "Hello"), ("sad", "World")]
     matches = re.findall(r'\[([a-z]+)\]([^\[]*)', text)
     return [(emotion, chunk.strip()) for emotion, chunk in matches if chunk.strip()]
 
@@ -251,7 +449,7 @@ SYSTEM_PROMPT = """You are Ikru, a desk companion robot.
 Return a valid JSON object:
 {"tools": [{"action": "movement_name", "duration": seconds}], "response": "[emotion]text [emotion]more text"}
 
-Available movement actions: forward, backward, left, right, stop, dance, sing
+Available actions: forward, backward, left, right, stop, dance, sing
 Available lowercase emotions: normal, happy, glee, sad, worried, focused, annoyed, surprised, skeptic, frustrated, unimpressed, sleepy, suspicious, squint, angry, furious, scared, awe
 
 Rules:
@@ -259,6 +457,7 @@ Rules:
 2. Each segment must contain real phrases/sentences (at least 5 words). Do not repeat the emotion name.
 3. Use a maximum of 3 emotion changes per response.
 4. Keep segments short (1-2 sentences) so they fit on the OLED screen.
+5. See your environment using your camera (you will be told what objects/faces are present).
 """
 
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -269,10 +468,29 @@ while True:
         break
 
     messages.append({"role": "user", "content": user})
-    robot.focused()  # Look focused while LLM is generating
+    robot.focused()  # Set eyes to focused thinking expression
 
-    # Call LLM in structured JSON mode
-    response = ollama.chat(model="qwen2.5:3b", messages=messages, format="json")
+    # Dynamic camera integration
+    if vision:
+        faces, objs = vision.get_latest_detections()
+        detected_items = []
+        if faces > 0:
+            detected_items.append(f"{faces} human face(s)")
+        if objs:
+            detected_items.append(", ".join(objs))
+        
+        if detected_items:
+            vision_context = f"What you currently see in front of you: {', '.join(detected_items)}."
+        else:
+            vision_context = "What you currently see: Nothing in particular."
+        
+        # Inject context temporarily right before the user prompt
+        temp_system_msg = {"role": "system", "content": vision_context}
+        ollama_messages = messages[:-1] + [temp_system_msg] + [messages[-1]]
+    else:
+        ollama_messages = messages
+
+    response = ollama.chat(model="qwen2.5:3b", messages=ollama_messages, format="json")
     assistant_raw = response["message"]["content"].strip()
 
     try:
@@ -280,7 +498,6 @@ while True:
         tools = data.get("tools", [])
         response_text = data.get("response", "").strip()
     except json.JSONDecodeError:
-        # Fallback
         tools, response_text = [], assistant_raw
 
     segments = parse_segments(response_text) or [("normal", response_text)]
@@ -293,15 +510,13 @@ while True:
 
     # 2. Render each segment with its specific emotion
     for emotion, text in segments:
-        # Change OLED eye expression
         emotion_functions.get(emotion, robot.normal)()
         
         if text:
-            # Send text to OLED
             robot.display(text)
             print(f"Emotion: {emotion} | OLED: {text}")
 
-            # Calculate exact scrolling delay matching ESP32 timings
+            # Scrolling delay timings
             CHARS_PER_LINE = 8
             SCROLL_MS_PER_PX = 0.030
             START_PAUSE_S = 0.600
@@ -311,7 +526,6 @@ while True:
             scroll_pixels = 64 + num_lines * 18
             scroll_time = scroll_pixels * SCROLL_MS_PER_PX
             wait = START_PAUSE_S + scroll_time + END_PAUSE_S
-
             time.sleep(wait)
         full_response_text += text + " "
 
@@ -319,7 +533,7 @@ while True:
     robot.display_close()
     time.sleep(0.35)
 
-    # 4. Execute physical movements if requested
+    # 4. Execute physical movements
     for t in tools:
         action = t.get("action", "").lower()
         duration = float(t.get("duration", 0))
@@ -336,35 +550,26 @@ while True:
         "content": json.dumps({"tools": tools, "response": response_text})
     })
 
+# Cleanup on exit
+if vision:
+    vision.stop()
 robot.close()
 ```
 
 ---
 
-## 6. ESP32 Arduino Firmware Core (`src/esp32_controller/esp32_controller.ino`)
+## 6. ESP32 Arduino Firmware Core
+
+### A. Body Controller Firmware (`src/esp32_controller/esp32_controller.ino`)
 Runs a multi-state machine for OLED rendering:
 * `OLED_IDLE`: Full screen eye animations. Eyes blink randomly, and react to emotion commands.
-* `OLED_SPEAKING`: Opens a speech box of width `84px` on the left side of the screen (`X` coordinate `0` to `84`). Shrinks the eyes down to scale `0.45` and pushes them to the bottom right corner (`X=106`, `Y=48`) so the eyes remain visible while text scrolls.
+* `OLED_SPEAKING`: Opens a speech box of width `84px` on the left side of the screen. Shrinks the eyes down to scale `0.45` and pushes them to the bottom right corner (`X=106`, `Y=48`) so the eyes remain visible while text scrolls.
 * `OLED_WAITING`: Speech box remains open, waiting for the next segment to avoid screen flicker.
 
-### Key Logic in C++
-1. **Text Formatting (`prepareMessage`)**:
-   Splits long text blocks into words and packs them into lines that do not exceed the `75px` boundary of the speech box. If a single word is wider than `75px`, it splits it and appends a hyphen `-`.
-2. **Text Scrolling (`updateSpeechScroll`)**:
-   Once the speech box slides open (width reaches `84`), it pauses for `600ms`. It then scrolls the text up pixel-by-pixel every `30ms`. When the text scrolls off screen, it pauses for `400ms` before closing the box or transitioning to the next block.
-3. **Smooth Eye Interpolation (`loop`)**:
-   In the main loop, target eye positions and scales are smoothly interpolated (Lerped) using `dt` (delta time) to prevent jarring visual jumps:
-   ```cpp
-   float lerpFactor = 10.0 * dt;
-   currentEyeScale += (targetEyeScale - currentEyeScale) * lerpFactor;
-   currentEyeX += (targetEyeX - currentEyeX) * lerpFactor;
-   currentEyeY += (targetEyeY - currentEyeY) * lerpFactor;
-   ```
-4. **WebSocket Commands Parser (`parseCommand`)**:
-   Converts movements to direct `digitalWrite()` calls. It maps the motor pins as:
-   - `FORWARD` / `BACKWARD` / `LEFT` / `RIGHT` / `STOP`
-   - Maps the 18 text emotions to internal `face->Expression.GoTo_<Emotion>()` methods.
-   - Parses display messages (e.g. `DISPLAY_OPEN` calls `oledOpen()`, `DISPLAY:<text>` calls `oledMessage()`, `DISPLAY_CLOSE` calls `oledClose()`).
+### B. ESP32-CAM Firmware (`src/esp32_cam/esp32_cam.ino`)
+Connects to Wi-Fi, configures the OV2640 camera, and starts an HTTP Web Server on port 80.
+* Serves a live MJPEG stream on `http://<CAM_IP>/stream` with low-latency optimizations (Wi-Fi power saving disabled, `CAMERA_GRAB_LATEST` enabled).
+* Serves raw JPEG snapshots at `http://<CAM_IP>/capture` for high-quality framing or VLM inputs.
 
 ***
 

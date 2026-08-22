@@ -4,17 +4,33 @@ import re
 import time
 import ollama
 from robot import Robot
+from vision import VisionSystem
 
 
 # ============================================================
-# CONNECT TO ESP32
+# CONNECT TO ESP32-BODY
 # ============================================================
-
-# robot = Robot(ip="192.168.1.44")
 
 robot = Robot(
     ip="192.168.1.37"
 )
+
+
+# ============================================================
+# CONNECT TO ESP32-CAM (Optional Vision System)
+# ============================================================
+# Set this to your ESP32-CAM IP to enable video feed & object/face detection.
+# Set to None to disable the camera system.
+CAM_IP = None  # Example: "192.168.1.38"
+
+vision = None
+if CAM_IP is not None:
+    try:
+        vision = VisionSystem(cam_ip=CAM_IP, show_window=True)
+        vision.start()
+        print("[Vision] Camera system successfully loaded!")
+    except Exception as e:
+        print(f"[Vision] Could not start camera system: {e}")
 
 
 # ============================================================
@@ -137,7 +153,8 @@ SYSTEM_PROMPT = (
     "* Answer questions\n"
     "* Help with simple tasks\n"
     "* Move forward / backward / left / right / stop\n"
-    "* Express emotions dynamically through your animated eyes\n\n"
+    "* Express emotions dynamically through your animated eyes\n"
+    "* See your environment using your camera (you will be told what objects/faces are present)\n\n"
 
     "============================================================\n"
     "ROBOT IDENTITY\n"
@@ -352,11 +369,32 @@ while True:
     # ASK OLLAMA
     # --------------------------------------------------------
 
+    # Dynamically inject camera vision context if running
+    if vision:
+        faces, objs = vision.get_latest_detections()
+        detected_items = []
+        if faces > 0:
+            detected_items.append(f"{faces} human face(s)")
+        if objs:
+            detected_items.append(", ".join(objs))
+        
+        if detected_items:
+            vision_context = f"What you currently see in front of you: {', '.join(detected_items)}."
+        else:
+            vision_context = "What you currently see: Nothing in particular."
+        
+        # Create a temporary system message to inject before the user's prompt
+        temp_system_msg = {"role": "system", "content": vision_context}
+        # Insert it right before the last message (which is the user's latest input)
+        ollama_messages = messages[:-1] + [temp_system_msg] + [messages[-1]]
+    else:
+        ollama_messages = messages
+
     response = ollama.chat(
 
         model="qwen2.5:3b",
 
-        messages=messages,
+        messages=ollama_messages,
 
         format="json"
 
@@ -590,5 +628,8 @@ while True:
 # ============================================================
 # CLEANUP
 # ============================================================
+
+if vision:
+    vision.stop()
 
 robot.close()
