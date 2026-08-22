@@ -6,8 +6,14 @@
       "language": "Python 3.x",
       "modules": {
         "chat.py": {
-          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, injects dynamic camera visual context, and dispatches them to robot.py.",
+          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, injects dynamic camera visual context, and dispatches them to robot.py. On visual keyword detection, triggers a local VLM (llava:7b) via describe_scene_vlm() to generate a plain-English scene description injected into Qwen context.",
+          "config_variables": {
+            "CAM_IP": "IP address of ESP32-CAM. Set to None to disable camera.",
+            "VLM_MODEL": "Ollama model name for visual Q&A (default: llava:7b). Requires ollama pull llava:7b.",
+            "VISUAL_KEYWORDS": "List of keywords that trigger VLM scene description (e.g. see, color, shirt, glasses)."
+          },
           "dependencies": [
+            "cv2",
             "robot.py",
             "vision.py",
             "ollama",
@@ -18,6 +24,12 @@
           ],
           "functions": [
             {
+              "name": "describe_scene_vlm",
+              "inputs": ["frame_jpeg_bytes: bytes"],
+              "outputs": ["str | None"],
+              "description": "Queries llava:7b via ollama.generate() with un-annotated JPEG camera frame. Returns 1-2 sentence scene description. Falls back to None on error."
+            },
+            {
               "name": "parse_segments",
               "inputs": ["text: str"],
               "outputs": ["list of (emotion: str, text: str) tuples"],
@@ -26,7 +38,7 @@
           ]
         },
         "vision.py": {
-          "purpose": "Decodes HTTP MJPEG streams from ESP32-CAM and runs thread-safe background face detection (Haar Cascade) and object detection (MobileNet-SSD).",
+          "purpose": "Decodes HTTP MJPEG streams from ESP32-CAM and runs thread-safe background face detection (Haar Cascade) and object detection (MobileNet-SSD). Stores both annotated and pristine (clean) frames. Provides JPEG-encoded clean frames for VLM consumption.",
           "dependencies": [
             "cv2",
             "numpy",
@@ -36,12 +48,12 @@
           ],
           "classes": {
             "VisionSystem": {
-              "description": "Handles stream reading, OpenCV image processing, and bounding box rendering.",
+              "description": "Handles stream reading, OpenCV image processing, and bounding box rendering. Maintains two frame buffers: latest_frame (annotated) and latest_clean_frame (pristine for VLM).",
               "methods": [
                 {
                   "name": "__init__",
                   "inputs": ["cam_ip: str", "show_window: bool = True"],
-                  "description": "Initializes OpenCV classifiers and DNN parameters."
+                  "description": "Initializes OpenCV classifiers and DNN parameters. Strips http:// prefix from cam_ip automatically."
                 },
                 {
                   "name": "start",
@@ -57,6 +69,12 @@
                   "name": "get_latest_detections",
                   "inputs": [],
                   "description": "Thread-safe retrieval of face count and detected object labels."
+                },
+                {
+                  "name": "get_latest_frame",
+                  "inputs": ["clean: bool = True"],
+                  "outputs": ["bytes (JPEG) | np.ndarray | None"],
+                  "description": "Thread-safe getter. clean=True returns JPEG bytes of the un-annotated frame (for VLM). clean=False returns the annotated numpy array (for display)."
                 }
               ]
             }
@@ -261,8 +279,8 @@
             }
           ]
         },
-        "esp32-eyes": {
-          "purpose": "A dynamic eye animation library using U8g2.",
+        "esp32_eyes": {
+          "purpose": "A dynamic eye animation library using U8g2. (Renamed from esp32-eyes-main for consistent snake_case naming.)",
           "components": {
             "Face": "Manages face state, active expressions, and blink timers.",
             "Eye": "Encapsulates size, position, scale, and interpolation for a single eye.",
