@@ -116,14 +116,14 @@ class VisionSystem:
                 _vlog(f"[Vision] Could not load Caffe model: {e}")
         
     def start(self):
-        """Starts the background thread to fetch and process camera frames."""
+        """Starts the background threads to fetch frames."""
         self.running = True
         self.thread = threading.Thread(target=self._run_stream, daemon=True)
         self.thread.start()
         _vlog(f"[Vision] Stream listener thread started at {self.stream_url}")
 
     def stop(self):
-        """Stops the streaming thread and closes OpenCV windows."""
+        """Stops the threads and closes OpenCV windows."""
         self.running = False
         if self.thread:
             self.thread.join(timeout=2)
@@ -193,24 +193,29 @@ class VisionSystem:
                     a = bytes_buffer.find(b'\xff\xd8')
                     b = bytes_buffer.find(b'\xff\xd9')
 
-                    if a != -1 and b != -1 and b > a:
-                        # Extract raw JPEG bytes
-                        jpg_bytes = bytes_buffer[a:b+2]
-                        # Discard consumed bytes from buffer
-                        bytes_buffer = bytes_buffer[b+2:]
+                    if a != -1 and b != -1:
+                        if b > a:
+                            # Extract raw JPEG bytes
+                            jpg_bytes = bytes_buffer[a:b+2]
+                            # Discard consumed bytes from buffer
+                            bytes_buffer = bytes_buffer[b+2:]
 
-                        # Guard: skip decoding if payload is suspiciously small
-                        if len(jpg_bytes) < 100:
-                            continue
+                            # Guard: skip decoding if payload is suspiciously small
+                            if len(jpg_bytes) < 100:
+                                continue
 
-                        # Decode JPEG bytes to numpy image
-                        frame = cv2.imdecode(
-                            np.frombuffer(jpg_bytes, dtype=np.uint8),
-                            cv2.IMREAD_COLOR
-                        )
+                            # Decode JPEG bytes to numpy image
+                            frame = cv2.imdecode(
+                                np.frombuffer(jpg_bytes, dtype=np.uint8),
+                                cv2.IMREAD_COLOR
+                            )
 
-                        if frame is not None:
-                            self._process_frame(frame)
+                            if frame is not None:
+                                self._process_frame(frame)
+                        else:
+                            # EOI appeared before SOI. This happens if we connected mid-frame
+                            # or dropped bytes. Discard everything before the SOI marker.
+                            bytes_buffer = bytes_buffer[a:]
 
             except Exception as e:
                 if was_connected:
@@ -288,11 +293,24 @@ class VisionSystem:
             self.detected_objects = list(set(objects)) # Unique objects
             self.latest_frame = frame  # Annotated frame for display
             
-        # Display the live window
-        if self.show_window:
+    def update_display(self):
+        """Updates the OpenCV window. MUST be called from the main thread on Windows."""
+        if not self.show_window or not self.running:
+            return
+            
+        frame = self.get_latest_frame(clean=False)
+        if frame is not None:
             cv2.imshow("IKRU Eyes - Live Stream", frame)
-            # Must call waitKey to refresh OpenCV window frame
-            cv2.waitKey(1)
+        else:
+            waiting_frame = np.zeros((240, 320, 3), dtype=np.uint8)
+            cv2.putText(
+                waiting_frame, "Waiting for Camera...", (20, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2
+            )
+            cv2.imshow("IKRU Eyes - Live Stream", waiting_frame)
+            
+        # Pump window events
+        cv2.waitKey(33)
 
 
 # Standalone testing mode

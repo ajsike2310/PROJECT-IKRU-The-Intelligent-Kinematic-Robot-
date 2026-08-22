@@ -5,7 +5,7 @@ import re
 import time
 import ollama
 from robot import Robot
-from vision import VisionSystem
+from vision import VisionSystem, flush_logs as vision_flush_logs
 
 
 # ============================================================
@@ -374,319 +374,335 @@ print("=" * 50)
 # MAIN CHAT LOOP
 # ============================================================
 
-while True:
+import threading, time
+def chat_worker():
+    while True:
 
-    # Flush any pending vision log messages before showing the prompt
-    # so they never interleave with the user's typed input
-    if vision:
-        vision.flush_logs()
+        # Flush any pending vision log messages before showing the prompt
+        # so they never interleave with the user's typed input
+        if vision:
+            vision_flush_logs()
 
-    user = input("\nYou: ")
-
-
-    # --------------------------------------------------------
-    # EXIT
-    # --------------------------------------------------------
-
-    if user.lower() == "exit":
-
-        break
-
-
-    # --------------------------------------------------------
-    # ADD USER MESSAGE
-    # --------------------------------------------------------
-
-    messages.append({
-
-        "role": "user",
-
-        "content": user
-
-    })
-
-
-    # --------------------------------------------------------
-    # THINKING FACE
-    #
-    # Ikru visually indicates that he is processing.
-    # --------------------------------------------------------
-
-    robot.focused()
-
-
-    # --------------------------------------------------------
-    # ASK OLLAMA
-    # --------------------------------------------------------
-
-    # Dynamically inject camera vision context if running
-    if vision:
-        faces, objs = vision.get_latest_detections()
-        detected_items = []
-        if faces > 0:
-            detected_items.append(f"{faces} human face(s)")
-        if objs:
-            detected_items.append(", ".join(objs))
-
-        # Base detector context (always present)
-        if detected_items:
-            vision_context = f"What you currently see in front of you: {', '.join(detected_items)}."
-        else:
-            vision_context = "What you currently see: Nothing in particular."
-
-        # VLM enrichment: trigger only on visual questions
-        user_lower = user.lower()
-        is_visual_query = any(kw in user_lower for kw in VISUAL_KEYWORDS)
-        if is_visual_query:
-            frame_bytes = vision.get_latest_frame(clean=True)
-            if frame_bytes is not None:
-                vlm_desc = describe_scene_vlm(frame_bytes)
-                if vlm_desc:
-                    vision_context = f"Visual Observation from Camera: {vlm_desc}"
-
-        # Create a temporary system message to inject before the user's prompt
-        temp_system_msg = {"role": "system", "content": vision_context}
-        # Insert it right before the last message (which is the user's latest input)
-        ollama_messages = messages[:-1] + [temp_system_msg] + [messages[-1]]
-    else:
-        ollama_messages = messages
-
-    response = ollama.chat(
-
-        model="qwen2.5:3b",
-
-        messages=ollama_messages,
-
-        format="json"
-
-    )
-
-
-    assistant_raw = response[
-        "message"
-    ][
-        "content"
-    ].strip()
-
-
-    # --------------------------------------------------------
-    # PARSE JSON
-    # --------------------------------------------------------
-
-    try:
-
-        data = json.loads(
-            assistant_raw
-        )
-
-
-        tools = data.get(
-            "tools",
-            []
-        )
-
-        # Backwards compatibility if model still uses 'tool'
-        tool = data.get("tool", None)
-        if tool is not None and isinstance(tool, str):
-            tools.append({"action": tool, "duration": 0})
-
-
-        response_text = data.get(
-            "response",
-            ""
-        ).strip()
-
-
-    except json.JSONDecodeError:
-
-        # ----------------------------------------------------
-        # Fallback
-        #
-        # If the model accidentally returns plain text,
-        # do not crash the robot.
-        # ----------------------------------------------------
-
-        print(
-            "\nModel returned invalid JSON."
-        )
-
-        print(
-            "Raw response:",
-            assistant_raw
-        )
-
-        tools = []
-
-        response_text = assistant_raw
-
-
-    # ========================================================
-    # PARSE EMOTION SEGMENTS
-    #
-    # Split the response into (emotion, text) pairs
-    # using the inline [emotion] tags.
-    # ========================================================
-
-    segments = parse_segments(response_text)
-
-
-    # --------------------------------------------------------
-    # Fallback: if no [emotion] tags found, treat the whole
-    # response as a single normal segment.
-    # --------------------------------------------------------
-
-    if not segments:
-
-        segments = [("normal", response_text)]
-
-
-    # ========================================================
-    # DISPLAY SEGMENTS
-    #
-    # 1. Open the box once.
-    # 2. For each segment: set emotion → display text → wait for scroll.
-    # 3. Close the box after the last segment.
-    # Box stays open the entire time — no flicker between segments.
-    # ========================================================
-
-    # Open box once for the full response
-    robot.display_open()
-    time.sleep(0.35)   # Wait for box open animation (BOX_ANIM_DURATION=300ms + buffer)
-
-    full_response_text = ""
-
-    for emotion, text in segments:
-
-        # --------------------------------------------------------
-        # EMOTION
-        # --------------------------------------------------------
-
-        if emotion in emotion_functions:
-
-            print(
-                f"Emotion: {emotion}"
-            )
-
-            emotion_functions[
-                emotion
-            ]()
-
-        else:
-
-            print(
-                f"Unknown emotion '{emotion}' — defaulting to normal"
-            )
-
-            robot.normal()
+        user = input("\nYou: ")
 
 
         # --------------------------------------------------------
-        # DISPLAY TEXT CHUNK ON OLED
+        # EXIT
         # --------------------------------------------------------
 
-        if text:
+        if user.lower() == "exit":
 
-            robot.display(text)
-
-            print(
-                f"  OLED: {text}"
-            )
-
-            # --------------------------------------------------------
-            # WAIT for this segment's scroll to finish.
-            #
-            # Box stays open so no box animation time is included.
-            #
-            # Match ESP32 firmware constants:
-            #   START_PAUSE       = 600ms
-            #   SCROLL_SPEED      = 30ms / pixel
-            #   END_PAUSE         = 400ms
-            #   SPEECH_LINE_HEIGHT= 18px
-            #   scrollY starts at 64
-            #
-            # Chars per line ≈ 8 (75px wide, ~9-10px per char)
-            # --------------------------------------------------------
-
-            CHARS_PER_LINE   = 8
-            SCROLL_MS_PER_PX = 0.030
-            START_PAUSE_S    = 0.600
-            END_PAUSE_S      = 0.400
-
-            num_lines     = max(1, math.ceil(len(text) / CHARS_PER_LINE))
-            scroll_pixels = 64 + num_lines * 18
-            scroll_time   = scroll_pixels * SCROLL_MS_PER_PX
-
-            wait = START_PAUSE_S + scroll_time + END_PAUSE_S
-
-            time.sleep(wait)
+            break
 
 
-        full_response_text += text + " "
+        # --------------------------------------------------------
+        # ADD USER MESSAGE
+        # --------------------------------------------------------
 
-    # Close box after all segments
-    robot.display_close()
-    time.sleep(0.35)   # Wait for box close animation
+        messages.append({
 
+            "role": "user",
 
-    # ========================================================
-    # MOVEMENT
-    # ========================================================
-
-    for t in tools:
-
-        action = t.get("action", "").lower()
-        duration = float(t.get("duration", 0))
-
-        if action in movement_functions:
-
-            print(
-                f"Executing: {action} for {duration}s"
-            )
-
-            if action in ["forward", "backward", "left", "right", "stop"]:
-                movement_functions[action](duration)
-            else:
-                movement_functions[action]()
-
-        else:
-
-            print(
-                f"Unknown action: {action}"
-            )
-
-
-    full_response_text = full_response_text.strip()
-
-    print(
-        "\nAssistant:",
-        full_response_text
-    )
-
-
-
-    # ========================================================
-    # SAVE ASSISTANT RESPONSE TO HISTORY
-    #
-    # Store the raw tagged response so the model maintains
-    # full context including emotional flow.
-    # ========================================================
-
-    messages.append({
-
-        "role": "assistant",
-
-        "content": json.dumps({
-
-            "tools": tools,
-
-            "response": response_text
+            "content": user
 
         })
 
-    })
+
+        # --------------------------------------------------------
+        # THINKING FACE
+        #
+        # Ikru visually indicates that he is processing.
+        # --------------------------------------------------------
+
+        robot.focused()
 
 
-# ============================================================
+        # --------------------------------------------------------
+        # ASK OLLAMA
+        # --------------------------------------------------------
+
+        # Dynamically inject camera vision context if running
+        if vision:
+            faces, objs = vision.get_latest_detections()
+            detected_items = []
+            if faces > 0:
+                detected_items.append(f"{faces} human face(s)")
+            if objs:
+                detected_items.append(", ".join(objs))
+
+            # Base detector context (always present)
+            if detected_items:
+                vision_context = f"What you currently see in front of you: {', '.join(detected_items)}."
+            else:
+                vision_context = "What you currently see: Nothing in particular."
+
+            # VLM enrichment: trigger only on visual questions
+            user_lower = user.lower()
+            is_visual_query = any(kw in user_lower for kw in VISUAL_KEYWORDS)
+            if is_visual_query:
+                frame_bytes = vision.get_latest_frame(clean=True)
+                if frame_bytes is not None:
+                    vlm_desc = describe_scene_vlm(frame_bytes)
+                    if vlm_desc:
+                        vision_context = f"Visual Observation from Camera: {vlm_desc}"
+
+            # Create a temporary system message to inject before the user's prompt
+            temp_system_msg = {"role": "system", "content": vision_context}
+            # Insert it right before the last message (which is the user's latest input)
+            ollama_messages = messages[:-1] + [temp_system_msg] + [messages[-1]]
+        else:
+            ollama_messages = messages
+
+        print("  [Thinking...]")
+
+        response = ollama.chat(
+
+            model="qwen2.5:3b",
+
+            messages=ollama_messages,
+
+            format="json"
+
+        )
+
+
+        assistant_raw = response[
+            "message"
+        ][
+            "content"
+        ].strip()
+
+
+        # --------------------------------------------------------
+        # PARSE JSON
+        # --------------------------------------------------------
+
+        try:
+
+            data = json.loads(
+                assistant_raw
+            )
+
+
+            tools = data.get(
+                "tools",
+                []
+            )
+
+            # Backwards compatibility if model still uses 'tool'
+            tool = data.get("tool", None)
+            if tool is not None and isinstance(tool, str):
+                tools.append({"action": tool, "duration": 0})
+
+
+            response_text = data.get(
+                "response",
+                ""
+            ).strip()
+
+
+        except json.JSONDecodeError:
+
+            # ----------------------------------------------------
+            # Fallback
+            #
+            # If the model accidentally returns plain text,
+            # do not crash the robot.
+            # ----------------------------------------------------
+
+            print(
+                "\nModel returned invalid JSON."
+            )
+
+            print(
+                "Raw response:",
+                assistant_raw
+            )
+
+            tools = []
+
+            response_text = assistant_raw
+
+
+        # ========================================================
+        # PARSE EMOTION SEGMENTS
+        #
+        # Split the response into (emotion, text) pairs
+        # using the inline [emotion] tags.
+        # ========================================================
+
+        segments = parse_segments(response_text)
+
+
+        # --------------------------------------------------------
+        # Fallback: if no [emotion] tags found, treat the whole
+        # response as a single normal segment.
+        # --------------------------------------------------------
+
+        if not segments:
+
+            segments = [("normal", response_text)]
+
+
+        # ========================================================
+        # DISPLAY SEGMENTS
+        #
+        # 1. Open the box once.
+        # 2. For each segment: set emotion → display text → wait for scroll.
+        # 3. Close the box after the last segment.
+        # Box stays open the entire time — no flicker between segments.
+        # ========================================================
+
+        # Open box once for the full response
+        robot.display_open()
+        time.sleep(0.35)   # Wait for box open animation (BOX_ANIM_DURATION=300ms + buffer)
+
+        full_response_text = ""
+
+        for emotion, text in segments:
+
+            # --------------------------------------------------------
+            # EMOTION
+            # --------------------------------------------------------
+
+            if emotion in emotion_functions:
+
+                print(
+                    f"Emotion: {emotion}"
+                )
+
+                emotion_functions[
+                    emotion
+                ]()
+
+            else:
+
+                print(
+                    f"Unknown emotion '{emotion}' — defaulting to normal"
+                )
+
+                robot.normal()
+
+
+            # --------------------------------------------------------
+            # DISPLAY TEXT CHUNK ON OLED
+            # --------------------------------------------------------
+
+            if text:
+
+                robot.display(text)
+
+                print(
+                    f"  OLED: {text}"
+                )
+
+                # --------------------------------------------------------
+                # WAIT for this segment's scroll to finish.
+                #
+                # Box stays open so no box animation time is included.
+                #
+                # Match ESP32 firmware constants:
+                #   START_PAUSE       = 600ms
+                #   SCROLL_SPEED      = 30ms / pixel
+                #   END_PAUSE         = 400ms
+                #   SPEECH_LINE_HEIGHT= 18px
+                #   scrollY starts at 64
+                #
+                # Chars per line ≈ 8 (75px wide, ~9-10px per char)
+                # --------------------------------------------------------
+
+                CHARS_PER_LINE   = 8
+                SCROLL_MS_PER_PX = 0.030
+                START_PAUSE_S    = 0.600
+                END_PAUSE_S      = 0.400
+
+                num_lines     = max(1, math.ceil(len(text) / CHARS_PER_LINE))
+                scroll_pixels = 64 + num_lines * 18
+                scroll_time   = scroll_pixels * SCROLL_MS_PER_PX
+
+                wait = START_PAUSE_S + scroll_time + END_PAUSE_S
+
+                time.sleep(wait)
+
+
+            full_response_text += text + " "
+
+        # Close box after all segments
+        robot.display_close()
+        time.sleep(0.35)   # Wait for box close animation
+
+
+        # ========================================================
+        # MOVEMENT
+        # ========================================================
+
+        for t in tools:
+
+            action = t.get("action", "").lower()
+            duration = float(t.get("duration", 0))
+
+            if action in movement_functions:
+
+                print(
+                    f"Executing: {action} for {duration}s"
+                )
+
+                if action in ["forward", "backward", "left", "right", "stop"]:
+                    movement_functions[action](duration)
+                else:
+                    movement_functions[action]()
+
+            else:
+
+                print(
+                    f"Unknown action: {action}"
+                )
+
+
+        full_response_text = full_response_text.strip()
+
+        print(
+            "\nAssistant:",
+            full_response_text
+        )
+
+
+
+        # ========================================================
+        # SAVE ASSISTANT RESPONSE TO HISTORY
+        #
+        # Store the raw tagged response so the model maintains
+        # full context including emotional flow.
+        # ========================================================
+
+        messages.append({
+
+            "role": "assistant",
+
+            "content": json.dumps({
+
+                "tools": tools,
+
+                "response": response_text
+
+            })
+
+        })
+
+
+    # ============================================================
+if __name__ == '__main__':
+    chat_thread = threading.Thread(target=chat_worker, daemon=True)
+    chat_thread.start()
+    try:
+        while chat_thread.is_alive():
+            if vision:
+                vision.update_display()
+            else:
+                time.sleep(0.1)
+    except KeyboardInterrupt:
+        print('\nExiting...')
+
 # CLEANUP
 # ============================================================
 
