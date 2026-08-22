@@ -58,6 +58,13 @@ def download_models_if_needed():
 
 class VisionSystem:
     def __init__(self, cam_ip, show_window=True):
+        # Strip protocol prefix and trailing slashes if present
+        if cam_ip.startswith("http://"):
+            cam_ip = cam_ip[7:]
+        elif cam_ip.startswith("https://"):
+            cam_ip = cam_ip[8:]
+        cam_ip = cam_ip.rstrip("/")
+        
         self.ip = cam_ip
         self.stream_url = f"http://{cam_ip}/stream"
         self.show_window = show_window
