@@ -1,10 +1,27 @@
 import os
 import sys
 import time
+import queue
 import threading
 import urllib.request
 import numpy as np
 import cv2
+
+# Thread-safe log queue — vision background thread puts messages here.
+# chat.py drains this before each prompt so logs never interrupt typing.
+log_queue = queue.Queue()
+
+def _vlog(msg):
+    """Queue a vision log message for clean display before next prompt."""
+    log_queue.put(msg)
+
+def flush_logs():
+    """Print all queued vision log messages. Call this before input() in chat.py."""
+    while not log_queue.empty():
+        try:
+            print(log_queue.get_nowait())
+        except queue.Empty:
+            break
 
 # ============================================================
 # IKRU PC VISION SYSTEM
@@ -38,22 +55,22 @@ def download_models_if_needed():
             os.makedirs(MODEL_DIR)
         
         if not os.path.exists(PROTOTXT_PATH):
-            print("[Vision] Downloading MobileNet-SSD prototxt model...")
+            _vlog("[Vision] Downloading MobileNet-SSD prototxt model...")
             urllib.request.urlretrieve(PROTOTXT_URL, PROTOTXT_PATH)
-            print("[Vision] Downloaded prototxt successfully.")
+            _vlog("[Vision] Downloaded prototxt successfully.")
             
         if not os.path.exists(MODEL_PATH):
-            print("[Vision] Downloading MobileNet-SSD weights (23MB). Please wait...")
+            _vlog("[Vision] Downloading MobileNet-SSD weights (23MB). Please wait...")
             # Use a custom user agent to avoid HTTP 403 on github download links
             opener = urllib.request.build_opener()
             opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
             urllib.request.install_opener(opener)
             urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-            print("[Vision] Downloaded weights successfully.")
+            _vlog("[Vision] Downloaded weights successfully.")
         return True
     except Exception as e:
-        print(f"[Vision] WARNING: Could not download object detection models: {e}")
-        print("[Vision] Falling back to Face Detection only.")
+        _vlog(f"[Vision] WARNING: Could not download object detection models: {e}")
+        _vlog("[Vision] Falling back to Face Detection only.")
         return False
 
 class VisionSystem:
@@ -94,16 +111,16 @@ class VisionSystem:
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
                 self.dnn_active = True
-                print("[Vision] MobileNet-SSD Object Detector initialized successfully.")
+                _vlog("[Vision] MobileNet-SSD Object Detector initialized successfully.")
             except Exception as e:
-                print(f"[Vision] Could not load Caffe model: {e}")
+                _vlog(f"[Vision] Could not load Caffe model: {e}")
         
     def start(self):
         """Starts the background thread to fetch and process camera frames."""
         self.running = True
         self.thread = threading.Thread(target=self._run_stream, daemon=True)
         self.thread.start()
-        print(f"[Vision] Stream listener thread started at {self.stream_url}")
+        _vlog(f"[Vision] Stream listener thread started at {self.stream_url}")
 
     def stop(self):
         """Stops the streaming thread and closes OpenCV windows."""
@@ -148,14 +165,14 @@ class VisionSystem:
         while self.running:
             try:
                 if not was_connected:
-                    print(f"[Vision] Connecting to camera stream at {self.stream_url}...")
+                    _vlog(f"[Vision] Connecting to camera stream at {self.stream_url}...")
 
                 req = urllib.request.Request(self.stream_url)
                 # Longer timeout to handle slow ESP32-CAM boot / WiFi jitter
                 stream = urllib.request.urlopen(req, timeout=15)
                 bytes_buffer = bytes()
 
-                print("[Vision] Stream connected! Analyzing frames...")
+                _vlog("[Vision] Stream connected! Analyzing frames...")
                 was_connected = True
                 reconnect_delay = 2  # reset backoff on success
 
@@ -197,8 +214,8 @@ class VisionSystem:
 
             except Exception as e:
                 if was_connected:
-                    # Only log when we transition from connected → disconnected
-                    print(f"[Vision] Stream lost ({e}). Retrying silently...")
+                    # Only log when we transition from connected -> disconnected
+                    _vlog(f"[Vision] Stream lost ({e}). Retrying silently...")
                     was_connected = False
                 if self.running:
                     time.sleep(reconnect_delay)

@@ -22,7 +22,7 @@ robot = Robot(
 # ============================================================
 # Set this to your ESP32-CAM IP to enable video feed & object/face detection.
 # Set to None to disable the camera system.
-CAM_IP = None  # Example: "192.168.1.38"
+CAM_IP = "192.168.1.40"  # Example: "192.168.1.38"
 
 # ============================================================
 # VLM CONFIG (Vision Language Model — for visual Q&A)
@@ -375,6 +375,11 @@ print("=" * 50)
 # ============================================================
 
 while True:
+
+    # Flush any pending vision log messages before showing the prompt
+    # so they never interleave with the user's typed input
+    if vision:
+        vision.flush_logs()
 
     user = input("\nYou: ")
 
