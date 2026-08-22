@@ -227,7 +227,7 @@ void setup() {
   // Disable brownout detector if power lines are noisy
   #include "soc/soc.h"
   #include "soc/rtc_cntl_reg.h"
-  WRITE_PERI_REG(RTC_CNTL_BROWNOUT_REG, 0);
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
   Serial.begin(115200);
   Serial.setDebugOutput(true);
@@ -291,9 +291,9 @@ void setup() {
     s->set_whitebal(s, 1);       // 0 = disable , 1 = enable
     s->set_awb_gain(s, 1);       // 0 = disable , 1 = enable
     s->set_wb_mode(s, 0);        // 0 to 4 (0: Auto, 1: Sunny, 2: Cloudy, 3: Office, 4: Home)
-    s->set_exposure_control(s, 1); // 0 = disable , 1 = enable
+    s->set_exposure_ctrl(s, 1);  // 0 = disable , 1 = enable
     s->set_aec2(s, 1);           // 0 = disable , 1 = enable
-    s->set_gain_control(s, 1);   // 0 = disable , 1 = enable
+    s->set_gain_ctrl(s, 1);      // 0 = disable , 1 = enable
     s->set_bpc(s, 1);            // Black pixel correction (0/1)
     s->set_wpc(s, 1);            // White pixel correction (0/1)
     s->set_hmirror(s, 0);        // Horizontal mirror (0/1)
