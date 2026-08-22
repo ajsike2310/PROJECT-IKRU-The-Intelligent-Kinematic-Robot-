@@ -71,7 +71,8 @@ class VisionSystem:
         
         self.running = False
         self.thread = None
-        self.latest_frame = None
+        self.latest_frame = None        # Annotated frame (for display)
+        self.latest_clean_frame = None  # Pristine frame (for VLM — no bounding boxes)
         
         # Thread-safe detection variables
         self.faces_count = 0
@@ -116,6 +117,28 @@ class VisionSystem:
         """Thread-safe getter for current active detections."""
         with self.lock:
             return self.faces_count, list(self.detected_objects)
+
+    def get_latest_frame(self, clean=True):
+        """Thread-safe getter for the most recent camera frame.
+        
+        Args:
+            clean (bool): If True, returns the pristine un-annotated JPEG bytes
+                          suitable for sending to a Vision Language Model.
+                          If False, returns the annotated frame as a numpy array.
+        Returns:
+            bytes | np.ndarray | None
+        """
+        with self.lock:
+            source = self.latest_clean_frame if clean else self.latest_frame
+            if source is None:
+                return None
+            if clean:
+                # Encode pristine frame to JPEG bytes in-memory (no disk I/O)
+                success, jpeg_buf = cv2.imencode(
+                    '.jpg', source, [cv2.IMWRITE_JPEG_QUALITY, 85]
+                )
+                return bytes(jpeg_buf) if success else None
+            return source.copy()
 
     def _run_stream(self):
         """Continuous MJPEG HTTP decoding loop."""
@@ -162,6 +185,10 @@ class VisionSystem:
 
     def _process_frame(self, frame):
         """Applies face detection, object detection, draws bounding boxes, and displays frame."""
+        # Store pristine copy BEFORE any annotation drawing — this is what the VLM will see
+        with self.lock:
+            self.latest_clean_frame = frame.copy()
+        
         h, w = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
@@ -216,18 +243,17 @@ class VisionSystem:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2
             )
 
-        # Thread-safe updates
+        # Thread-safe updates (latest_clean_frame already stored at top of this method)
         with self.lock:
             self.faces_count = len(faces)
             self.detected_objects = list(set(objects)) # Unique objects
+            self.latest_frame = frame  # Annotated frame for display
             
         # Display the live window
         if self.show_window:
             cv2.imshow("IKRU Eyes - Live Stream", frame)
             # Must call waitKey to refresh OpenCV window frame
             cv2.waitKey(1)
-            
-        self.latest_frame = frame
 
 
 # Standalone testing mode

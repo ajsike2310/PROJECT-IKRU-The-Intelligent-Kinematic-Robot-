@@ -1,3 +1,4 @@
+import cv2
 import json
 import math
 import re
@@ -23,6 +24,21 @@ robot = Robot(
 # Set to None to disable the camera system.
 CAM_IP = None  # Example: "192.168.1.38"
 
+# ============================================================
+# VLM CONFIG (Vision Language Model — for visual Q&A)
+# ============================================================
+# Model used for describing camera frames when visual questions are asked.
+# Requires: ollama pull llava:7b
+VLM_MODEL = "llava:7b"
+
+# Keywords that trigger the VLM to describe the current camera frame
+VISUAL_KEYWORDS = [
+    "see", "look", "color", "colour", "wear", "wearing",
+    "shirt", "glass", "glasses", "hold", "show", "describe",
+    "notice", "what", "who", "face", "clothes", "outfit",
+    "hand", "background", "room"
+]
+
 vision = None
 if CAM_IP is not None:
     try:
@@ -31,6 +47,35 @@ if CAM_IP is not None:
         print("[Vision] Camera system successfully loaded!")
     except Exception as e:
         print(f"[Vision] Could not start camera system: {e}")
+
+
+def describe_scene_vlm(frame_jpeg_bytes):
+    """Queries the local VLM (llava) with the current camera frame to get a
+    plain-English scene description. Used for visual questions like shirt color.
+    
+    Args:
+        frame_jpeg_bytes (bytes): JPEG-encoded camera frame (un-annotated).
+    Returns:
+        str: A 1-2 sentence scene description, or None if VLM is unavailable.
+    """
+    try:
+        print("[Vision] Querying VLM for scene description...")
+        res = ollama.generate(
+            model=VLM_MODEL,
+            prompt=(
+                "Describe what you see in the image in 1-2 short sentences. "
+                "Focus on: people, their clothing colors, accessories (glasses, hats), "
+                "and any notable objects in the scene. Be factual and concise."
+            ),
+            images=[frame_jpeg_bytes],
+        )
+        description = res.response.strip()
+        print(f"[Vision] VLM description: {description}")
+        return description
+    except Exception as e:
+        print(f"[Vision] VLM unavailable ({e}). Using detector labels only.")
+        return None
+
 
 
 # ============================================================
@@ -377,12 +422,23 @@ while True:
             detected_items.append(f"{faces} human face(s)")
         if objs:
             detected_items.append(", ".join(objs))
-        
+
+        # Base detector context (always present)
         if detected_items:
             vision_context = f"What you currently see in front of you: {', '.join(detected_items)}."
         else:
             vision_context = "What you currently see: Nothing in particular."
-        
+
+        # VLM enrichment: trigger only on visual questions
+        user_lower = user.lower()
+        is_visual_query = any(kw in user_lower for kw in VISUAL_KEYWORDS)
+        if is_visual_query:
+            frame_bytes = vision.get_latest_frame(clean=True)
+            if frame_bytes is not None:
+                vlm_desc = describe_scene_vlm(frame_bytes)
+                if vlm_desc:
+                    vision_context = f"Visual Observation from Camera: {vlm_desc}"
+
         # Create a temporary system message to inject before the user's prompt
         temp_system_msg = {"role": "system", "content": vision_context}
         # Insert it right before the last message (which is the user's latest input)
