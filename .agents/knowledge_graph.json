@@ -1,295 +1,44 @@
 {
   "project_name": "PROJECT IKRU",
-  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets, with camera vision enabled by an ESP32-CAM.",
-  "architecture": {
-    "host_pc": {
-      "language": "Python 3.x",
-      "modules": {
-        "chat.py": {
-          "purpose": "Main interactive shell loop running a local Ollama LLM instance (qwen2.5:3b). Interprets user requests, generates formatted JSON responses, parses inline emotion tags and movement tool calls, injects dynamic camera visual context, and dispatches them to robot.py. On visual keyword detection, triggers a local VLM (llava:7b) via describe_scene_vlm() to generate a plain-English scene description injected into Qwen context.",
-          "config_variables": {
-            "CAM_IP": "IP address of ESP32-CAM. Set to None to disable camera.",
-            "VLM_MODEL": "Ollama model name for visual Q&A (default: llava:7b). Requires ollama pull llava:7b.",
-            "VISUAL_KEYWORDS": "List of keywords that trigger VLM scene description (e.g. see, color, shirt, glasses)."
-          },
-          "dependencies": [
-            "cv2",
-            "robot.py",
-            "vision.py",
-            "ollama",
-            "json",
-            "re",
-            "math",
-            "time"
-          ],
-          "functions": [
-            {
-              "name": "describe_scene_vlm",
-              "inputs": ["frame_jpeg_bytes: bytes"],
-              "outputs": ["str | None"],
-              "description": "Queries llava:7b via ollama.generate() with un-annotated JPEG camera frame. Returns 1-2 sentence scene description. Falls back to None on error."
-            },
-            {
-              "name": "parse_segments",
-              "inputs": ["text: str"],
-              "outputs": ["list of (emotion: str, text: str) tuples"],
-              "description": "Splits a response string containing inline [emotion] tags into individual segments for display on the OLED."
-            }
-          ]
+  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets, with dedicated AP-mode UDP camera streaming from an ESP32-CAM.",
+  "structure": {
+    "software": {
+      "path": "software/ikru/",
+      "packages": {
+        "chat": {
+          "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying.",
+          "prompts.py": "System prompt, identity, emotion rules, and movement tool instructions.",
+          "parser.py": "Extracts [emotion] tags and parses tool calls from LLM JSON responses."
         },
-        "vision.py": {
-          "purpose": "Decodes HTTP MJPEG streams from ESP32-CAM and runs thread-safe background face detection (Haar Cascade) and object detection (MobileNet-SSD). Stores both annotated and pristine (clean) frames. Provides JPEG-encoded clean frames for VLM consumption.",
-          "dependencies": [
-            "cv2",
-            "numpy",
-            "urllib",
-            "threading",
-            "time"
-          ],
-          "classes": {
-            "VisionSystem": {
-              "description": "Handles stream reading, OpenCV image processing, and bounding box rendering. Maintains two frame buffers: latest_frame (annotated) and latest_clean_frame (pristine for VLM).",
-              "methods": [
-                {
-                  "name": "__init__",
-                  "inputs": ["cam_ip: str", "show_window: bool = True"],
-                  "description": "Initializes OpenCV classifiers and DNN parameters. Strips http:// prefix from cam_ip automatically."
-                },
-                {
-                  "name": "start",
-                  "inputs": [],
-                  "description": "Spawns background capture thread."
-                },
-                {
-                  "name": "stop",
-                  "inputs": [],
-                  "description": "Shuts down background thread and destroys windows."
-                },
-                {
-                  "name": "get_latest_detections",
-                  "inputs": [],
-                  "description": "Thread-safe retrieval of face count and detected object labels."
-                },
-                {
-                  "name": "get_latest_frame",
-                  "inputs": ["clean: bool = True"],
-                  "outputs": ["bytes (JPEG) | np.ndarray | None"],
-                  "description": "Thread-safe getter. clean=True returns JPEG bytes of the un-annotated frame (for VLM). clean=False returns the annotated numpy array (for display)."
-                }
-              ]
-            }
-          }
+        "vision": {
+          "receiver.py": "VisionReceiver class handling AP discovery handshake (port 2223) and reassembling 22-byte header UDP packets into frames (port 2222).",
+          "frame_buffer.py": "Thread-safe latest-frame buffer with zero queue buildup.",
+          "vlm.py": "VLMClient for on-demand visual reasoning with Qwen3-VL/LLaVA."
         },
-        "robot.py": {
-          "purpose": "WebSocket controller client that provides a Python API to send movement, emotion, and text display commands directly to the ESP32 WebSocket server.",
-          "dependencies": [
-            "websocket",
-            "time"
-          ],
-          "classes": {
-            "Robot": {
-              "description": "Encapsulates the WebSocket connection and command sending methods.",
-              "methods": [
-                {
-                  "name": "__init__",
-                  "inputs": ["ip: str"],
-                  "description": "Establishes a WebSocket connection to the ESP32 at ws://{ip}:81."
-                },
-                {
-                  "name": "send",
-                  "inputs": ["cmd: str"],
-                  "description": "Sends a plain text command to the ESP32 and prints the acknowledgement reply."
-                },
-                {
-                  "name": "forward",
-                  "inputs": ["duration: float = 0"],
-                  "description": "Sends FORWARD command to ESP32. Stops after duration if duration > 0."
-                },
-                {
-                  "name": "backward",
-                  "inputs": ["duration: float = 0"],
-                  "description": "Sends BACKWARD command to ESP32. Stops after duration if duration > 0."
-                },
-                {
-                  "name": "left",
-                  "inputs": ["duration: float = 0"],
-                  "description": "Sends LEFT command to ESP32 (pivot left). Stops after duration if duration > 0."
-                },
-                {
-                  "name": "right",
-                  "inputs": ["duration: float = 0"],
-                  "description": "Sends RIGHT command to ESP32 (pivot right). Stops after duration if duration > 0."
-                },
-                {
-                  "name": "stop",
-                  "inputs": ["duration: float = 0"],
-                  "description": "Sends STOP command to ESP32 (coasts motors)."
-                },
-                {
-                  "name": "display",
-                  "inputs": ["text: str"],
-                  "description": "Sends DISPLAY:<text> to display text on OLED."
-                },
-                {
-                  "name": "display_open",
-                  "inputs": [],
-                  "description": "Sends DISPLAY_OPEN command to open speech box on OLED."
-                },
-                {
-                  "name": "display_close",
-                  "inputs": [],
-                  "description": "Sends DISPLAY_CLOSE command to close speech box and return to eye animations."
-                },
-                {
-                  "name": "dance",
-                  "inputs": [],
-                  "description": "Runs a pre-defined sequence of movements and emotion/expression commands."
-                },
-                {
-                  "name": "sing",
-                  "inputs": [],
-                  "description": "Sways left/right, changes emotions, and displays musical note symbols on the screen."
-                },
-                {
-                  "name": "close",
-                  "inputs": [],
-                  "description": "Closes the WebSocket connection."
-                },
-                {"name": "normal", "inputs": [], "description": "Sets eye expression to NORMAL."},
-                {"name": "happy", "inputs": [], "description": "Sets eye expression to HAPPY."},
-                {"name": "glee", "inputs": [], "description": "Sets eye expression to GLEE."},
-                {"name": "sad", "inputs": [], "description": "Sets eye expression to SAD."},
-                {"name": "worried", "inputs": [], "description": "Sets eye expression to WORRIED."},
-                {"name": "focused", "inputs": [], "description": "Sets eye expression to FOCUSED."},
-                {"name": "annoyed", "inputs": [], "description": "Sets eye expression to ANNOYED."},
-                {"name": "surprised", "inputs": [], "description": "Sets eye expression to SURPRISED."},
-                {"name": "skeptic", "inputs": [], "description": "Sets eye expression to SKEPTIC."},
-                {"name": "frustrated", "inputs": [], "description": "Sets eye expression to FRUSTRATED."},
-                {"name": "unimpressed", "inputs": [], "description": "Sets eye expression to UNIMPRESSED."},
-                {"name": "sleepy", "inputs": [], "description": "Sets eye expression to SLEEPY."},
-                {"name": "suspicious", "inputs": [], "description": "Sets eye expression to SUSPICIOUS."},
-                {"name": "squint", "inputs": [], "description": "Sets eye expression to SQUINT."},
-                {"name": "angry", "inputs": [], "description": "Sets eye expression to ANGRY."},
-                {"name": "furious", "inputs": [], "description": "Sets eye expression to FURIOUS."},
-                {"name": "scared", "inputs": [], "description": "Sets eye expression to SCARED."},
-                {"name": "awe", "inputs": [], "description": "Sets eye expression to AWE."}
-              ]
-            }
-          }
+        "robot": {
+          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 and motor/OLED commands.",
+          "protocol.py": "Command strings, constants, and scroll timing calculations for OLED speech box."
         },
-        "test_robot.py": {
-          "purpose": "A diagnostics script to test raw WebSocket connections and direct DISPLAY commands."
-        },
-        "test_socket.py": {
-          "purpose": "A diagnostics script to test TCP connectivity to the ESP32 on port 81."
-        }
+        "main.py": "Main CLI loop integrating ChatEngine, RobotController, and VisionReceiver."
       }
     },
-    "esp32_firmware": {
-      "language": "Arduino C++",
-      "modules": {
-        "esp32_controller.ino": {
-          "purpose": "Main body firmware file that runs a WebSocket server on port 81, parses incoming commands, controls L293D motor driver GPIOs, handles speech scroll on SSD1306 OLED, and coordinates eye rendering.",
-          "dependencies": [
-            "Face.h",
-            "WebSocketsServer.h",
-            "WiFi.h",
-            "Wire.h"
-          ],
-          "pin_configurations": {
-            "EN1": 13,
-            "EN2": 33,
-            "C1A": 26,
-            "C1B": 27,
-            "C2A": 14,
-            "C2B": 12,
-            "SDA": 21,
-            "SCL": 22
-          },
-          "functions": [
-            {
-              "name": "parseCommand",
-              "inputs": ["input: String"],
-              "description": "Parses commands for OLED display control, 18 emotions, and 5 motor movements."
-            },
-            {
-              "name": "prepareMessage",
-              "inputs": ["text: String"],
-              "description": "Wraps input text to fit the 75px wide OLED speech box boundaries without splitting words."
-            },
-            {
-              "name": "updateSpeechScroll",
-              "inputs": [],
-              "description": "Updates animations for speech box opening, text scrolling, and speech box closing."
-            },
-            {
-              "name": "drawSpeakingText",
-              "inputs": [],
-              "description": "Draws speech box frame and lines of text inside the visible box area."
-            },
-            {
-              "name": "moveForward",
-              "inputs": [],
-              "description": "Sets L293D GPIOs for forward motion."
-            },
-            {
-              "name": "moveBackward",
-              "inputs": [],
-              "description": "Sets L293D GPIOs for backward motion."
-            },
-            {
-              "name": "moveLeft",
-              "inputs": [],
-              "description": "Sets L293D GPIOs for left pivot spin."
-            },
-            {
-              "name": "moveRight",
-              "inputs": [],
-              "description": "Sets L293D GPIOs for right pivot spin."
-            },
-            {
-              "name": "stopMotors",
-              "inputs": [],
-              "description": "Disables motor enable pins to stop movements."
-            }
-          ]
-        },
-        "esp32_cam.ino": {
-          "purpose": "ESP32-CAM firmware that captures OV2640 frames and hosts low-latency MJPEG video streaming server on port 80.",
-          "dependencies": [
-            "esp_camera.h",
-            "WiFi.h",
-            "esp_http_server.h"
-          ],
-          "functions": [
-            {
-              "name": "index_handler",
-              "inputs": ["req: httpd_req_t*"],
-              "description": "Serves responsive HTML stream viewer page."
-            },
-            {
-              "name": "capture_handler",
-              "inputs": ["req: httpd_req_t*"],
-              "description": "Captures and serves a single JPEG snapshot."
-            },
-            {
-              "name": "stream_handler",
-              "inputs": ["req: httpd_req_t*"],
-              "description": "Streams continuous JPEG images as multipart/x-mixed-replace MJPEG feed."
-            }
-          ]
-        },
-        "esp32_eyes": {
-          "purpose": "A dynamic eye animation library using U8g2. (Renamed from esp32-eyes-main for consistent snake_case naming.)",
-          "components": {
-            "Face": "Manages face state, active expressions, and blink timers.",
-            "Eye": "Encapsulates size, position, scale, and interpolation for a single eye.",
-            "FaceExpression": "Implements transition logic for 18 custom expressions (Normal, Happy, Focused, etc.).",
-            "EyeDrawer": "Handles low-level rendering shapes on SSD1306 OLED screen.",
-            "Animations": "Interpolates scaling and coordinate changes smoothly over frames."
-          }
-        }
+    "firmware": {
+      "controller": {
+        "path": "firmware/controller/controller.ino",
+        "purpose": "ESP32 Body & OLED firmware managing WebSocket server, DRV8833 dual motors, and speech scrolling."
+      },
+      "eyes-demo": {
+        "path": "firmware/eyes-demo/eyes-demo.ino",
+        "purpose": "Standalone U8g2 dynamic eye animations demo."
       }
+    },
+    "tests": {
+      "vision": {
+        "esp32_cam_ap": "Standalone AP mode firmware (IKRU-CAM / 192.168.4.1) streaming chunked UDP JPEGs on port 2222 with discovery on port 2223.",
+        "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
+      },
+      "test_robot.py": "WebSocket command tester script.",
+      "test_socket.py": "TCP port 81 reachability tester script."
     }
   }
 }

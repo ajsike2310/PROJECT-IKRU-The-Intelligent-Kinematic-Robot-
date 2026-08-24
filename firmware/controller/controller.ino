@@ -8,7 +8,7 @@
 //
 // Hardware:
 // ESP32-WROOM-32
-// L293D Motor Driver
+// DRV8833 Dual H-Bridge Motor Driver
 // 2x DC Motor
 // SSD1306 128x64 I2C OLED (driven via U8g2 through the Face library)
 //
