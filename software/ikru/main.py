@@ -35,8 +35,11 @@ def main():
     print("=" * 50)
 
     # Initialize Subsystems
-    robot = RobotController(ip=ROBOT_IP)
+    robot = RobotController(ip=ROBOT_IP, audio_ip=CAM_IP, enable_local_audio=True, volume=0.20)
     chat = ChatEngine(model=LLM_MODEL)
+
+    # Play startup greeting chime
+    robot.play_sound("happy", 0.7)
 
     vision = None
     vlm = None
@@ -64,8 +67,9 @@ def main():
             if user_input.lower() == "exit":
                 break
 
-            # Indicate thinking state on OLED
+            # Indicate thinking state on OLED & audio
             robot.focused()
+            robot.play_sound("thinking", 0.5)
             print("  [Thinking...]")
 
             # Optional visual reasoning

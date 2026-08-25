@@ -35,6 +35,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.wav
+**/scratch/
 
 # C extensions
 *.so

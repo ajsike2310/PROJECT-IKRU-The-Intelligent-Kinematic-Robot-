@@ -203,21 +203,29 @@ PROJECT-IKRU/
 │
 ├── firmware/                          # Microcontroller C++ Firmware
 │   ├── controller/                    # ESP32 Body & OLED Firmware
-│   │   ├── controller.ino             # Main robot firmware
+│   │   ├── controller.ino             # Main robot body firmware (WebSocket, motors, speech scroll)
 │   │   ├── Face.h / Face.cpp          # Procedural facial state engine
 │   │   ├── Eye.h / Eye.cpp            # Eye geometry and animation
 │   │   └── ...                        # U8g2 graphics drivers & assets
+│   │
+│   ├── camera/                        # ESP32-CAM Vision Firmware
+│   │   └── camera.ino                 # AP mode ('IKRU-CAM') + low-latency UDP JPEG streamer
 │   │
 │   └── eyes-demo/                     # Standalone Eye Animation Demo
 │       ├── eyes-demo.ino
 │       └── ...
 │
 └── tests/                             # Diagnostics & Hardware Verification
-    ├── test_robot.py                  # Direct WebSocket tester
-    ├── test_socket.py                 # TCP port 81 reachability tester
-    └── vision/                        # Standalone Vision Diagnostics
-        └── esp32_cam_ap/
-            └── esp32_cam_ap.ino       # AP mode UDP camera test
+    ├── robot/                         # WebSocket & TCP Diagnostics
+    │   ├── test_robot.py              # Direct WebSocket tester
+    │   └── test_socket.py             # TCP port 81 reachability tester
+    ├── vision/                        # Vision & Object Detection Diagnostics
+    │   ├── esp32_cam_ap/
+    │   │   └── esp32_cam_ap.ino       # AP mode UDP camera test
+    │   └── test_udp_receiver.py       # Standalone receiver + MobileNet-SSD
+    └── speaker/                       # Audio Diagnostics
+        └── esp32_cam_speaker/
+            └── esp32_cam_speaker.ino  # GPIO 2 tone and melody generator
 ```
 
 ### Module Descriptions
