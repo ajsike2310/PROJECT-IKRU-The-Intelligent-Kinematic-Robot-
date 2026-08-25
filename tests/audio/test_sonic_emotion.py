@@ -22,10 +22,11 @@ import io
 import sys
 import os
 
-# Ensure tests/audio directory is in sys.path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure project software directory is in sys.path
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(root_dir, "software"))
 
-from sonic_emotion import SonicEmotionEngine, DroidStep, Tone
+from ikru.audio import SonicEmotionEngine, DroidStep
 
 
 class TestSonicEmotionEngine(unittest.TestCase):

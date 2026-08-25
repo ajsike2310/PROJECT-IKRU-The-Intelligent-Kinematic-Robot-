@@ -100,15 +100,49 @@ class SonicEmotionEngine:
         "processing": "processing",
     }
 
-    def normalize_emotion_name(self, name: str) -> str:
+    def normalize_emotion_name(self, name: any) -> str:
+        if not name or not isinstance(name, str):
+            return "neutral"
         clean = name.strip().lower()
         return self.EMOTION_MAP.get(clean, "neutral")
 
     def clamp_intensity(self, val: float) -> float:
         try:
-            return max(0.0, min(1.0, float(val)))
+            f = float(val)
+            if math.isnan(f) or math.isinf(f):
+                return 0.5
+            return max(0.0, min(1.0, f))
         except (ValueError, TypeError):
             return 0.5
+
+    def build_esp32_command(
+        self,
+        emotion: str,
+        intensity: float = 0.5,
+        intent: Optional[str] = None,
+        mode: str = "json_named"
+    ) -> Union[dict, str]:
+        clamped_intensity = self.clamp_intensity(intensity)
+        norm_emotion = self.normalize_emotion_name(emotion)
+        steps = self.generate_pattern(norm_emotion, clamped_intensity, intent)
+
+        if mode == "protocol_named":
+            return f"SOUND:{norm_emotion.upper()}:{clamped_intensity:.2f}"
+        elif mode == "protocol_tones":
+            tone_strs = [f"{int(s.start_freq)},{int(s.end_freq)},{int(s.duration_ms)},{int(s.pause_ms)}" for s in steps]
+            return f"TONES:{';'.join(tone_strs)}"
+        elif mode == "json_tones":
+            return {
+                "type": "tones",
+                "tones": [s.to_tuple() for s in steps]
+            }
+        else:  # json_named default
+            return {
+                "type": "sound",
+                "pattern": norm_emotion,
+                "intensity": clamped_intensity,
+                "steps": [s.to_dict() for s in steps]
+            }
 
     # -------------------------------------------------------------------------
     # R2-D2 ASTROMECH GLISSANDO SOUND GENERATORS
@@ -137,9 +171,9 @@ class SonicEmotionEngine:
 
     def _generate_sad(self, intensity: float) -> List[DroidStep]:
         return [
-            self._chirp(2100, 1500, 160 + int(50 * intensity), 25),
-            self._chirp(1450, 850, 200 + int(60 * intensity), 30),
-            self._chirp(800, 320, 260 + int(80 * intensity), 0),
+            self._chirp(2100, 1100, 160 + int(50 * intensity), 25),
+            self._chirp(1100, 500, 200 + int(60 * intensity), 30),
+            self._chirp(500, 220, 260 + int(80 * intensity), 0),
         ]
 
     def _generate_angry(self, intensity: float) -> List[DroidStep]:

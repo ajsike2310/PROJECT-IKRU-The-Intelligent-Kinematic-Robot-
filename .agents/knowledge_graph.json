@@ -34,27 +34,17 @@
       "head": {
         "path": "firmware/head/head.ino",
         "purpose": "ESP32-CAM Head Unit ('IKRU-CAM' / 192.168.4.1) firmware streaming UDP video on port 2222 with discovery on port 2223, and driving SmartElex speaker R2-D2 glissando sweeps on GPIO 2 via TCP on port 5000."
-      },
-      "eyes-demo": {
-        "path": "firmware/eyes-demo/eyes-demo.ino",
-        "purpose": "Standalone U8g2 dynamic eye animations demo."
       }
     },
     "tests": {
       "vision": {
-        "esp32_cam_ap": "Standalone AP mode firmware (IKRU-CAM / 192.168.4.1) streaming chunked UDP JPEGs on port 2222 with discovery on port 2223.",
         "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
       },
-      "speaker": {
-        "esp32_cam_speaker": "Standalone speaker diagnostic sketch testing GPIO 2 tone and melody generation on ESP32-CAM.",
-        "speak_test.py": "WAV audio converter and streaming client."
-      },
       "audio": {
-        "sonic_emotion.py": "R2-D2 Astromech SonicEmotionEngine class converting robot emotions, intents, and natural language sentences into authentic frequency sweeps (chirps), syllable-cadence beeps, warbles/trills, and staccato droid chatter with continuous-phase WAV synthesizer.",
         "test_sonic_emotion.py": "Automated unit tests covering all 18+ R2-D2 droid vocalizations, glissando sweeps, intensity levels, intent blending, sentence prosody, and ESP32 command serialization.",
-        "interactive_test.py": "Interactive CLI test harness supporting arbitrary natural sentence replication into R2-D2 vocalizations, word-length driven durations, ASCII sweep ladders, PC audio preview, and direct WebSocket transmission to ESP32 AP (ws://192.168.4.1:81).",
-        "esp32_sonic_speaker": "Standalone non-blocking ESP32 firmware sketch broadcasting 'IKRU-AUDIO' AP at 192.168.4.1, generating continuous-sweep glissando hardware PWM audio on SmartElex speaker via serial, WebSocket, or TCP."
+        "interactive_test.py": "Interactive CLI test harness supporting arbitrary natural sentence replication into R2-D2 vocalizations, word-length driven durations, ASCII sweep ladders, PC audio preview, and direct WebSocket transmission to ESP32 AP (ws://192.168.4.1:81)."
       },
+      "test_integrated_audio.py": "Integration test for SonicClient and RobotController.",
       "test_robot.py": "WebSocket command tester script.",
       "test_socket.py": "TCP port 81 reachability tester script."
     }
