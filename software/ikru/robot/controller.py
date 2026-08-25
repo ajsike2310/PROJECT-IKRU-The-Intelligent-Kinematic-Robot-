@@ -35,19 +35,29 @@ class RobotController:
         )
 
     def _connect(self):
-        try:
-            print(f"[Robot] Connecting to ws://{self.ip}:{self.port}...")
-            self.ws = websocket.create_connection(
-                f"ws://{self.ip}:{self.port}",
-                timeout=3,
-                http_proxy_host=None,
-                http_proxy_port=None
-            )
-            self.connected = True
-            print("[Robot] WebSocket connected successfully!")
-        except Exception as e:
-            print(f"[Robot] Connection failed: {e}")
-            self.connected = False
+        candidates = [self.ip] if self.ip else []
+        for candidate in ["192.168.4.3", "192.168.4.2", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        for target_ip in candidates:
+            try:
+                print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
+                self.ws = websocket.create_connection(
+                    f"ws://{target_ip}:{self.port}",
+                    timeout=1.5,
+                    http_proxy_host=None,
+                    http_proxy_port=None
+                )
+                self.ip = target_ip
+                self.connected = True
+                print(f"[Robot] WebSocket connected successfully to {self.ip}!")
+                return
+            except Exception as e:
+                pass
+
+        print(f"[Robot] Connection failed on candidates {candidates}. Robot body/OLED offline.")
+        self.connected = False
 
     def send(self, cmd):
         """Sends a raw text command to the ESP32 Body controller."""

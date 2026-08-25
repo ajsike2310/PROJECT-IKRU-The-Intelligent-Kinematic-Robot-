@@ -12,10 +12,10 @@ from ikru.chat import ChatEngine
 from ikru.robot import RobotController
 from ikru.vision import VisionReceiver, VLMClient
 
-# Configuration
-ROBOT_IP = "192.168.1.37"
-CAM_IP = "192.168.4.1"       # AP mode default: 192.168.4.1 (or station IP if on home Wi-Fi)
-ENABLE_VISION = True        # Set to True when connected to IKRU-CAM
+# Configuration (Standalone AP Mode — Everything via IKRU-CAM)
+ROBOT_IP = "192.168.4.3"    # Body & OLED Controller connected to IKRU-CAM AP
+CAM_IP = "192.168.4.1"      # Head Unit (Camera + Speaker AP Gateway)
+ENABLE_VISION = True       # Set to True when connected to IKRU-CAM
 
 LLM_MODEL = "qwen2.5:3b"
 VLM_MODEL = "qwen3-vl:4b"

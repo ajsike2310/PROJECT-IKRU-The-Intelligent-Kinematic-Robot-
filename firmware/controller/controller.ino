@@ -21,11 +21,11 @@
 // ============================================================
 
 // ============================================================
-// WIFI
+// WIFI (Connecting to IKRU-CAM Head Access Point)
 // ============================================================
 
-const char *ssid = "GNXS-2.4G-C457E1";
-const char *password = "1234567890";
+const char *ssid = "IKRU-CAM";
+const char *password = "ikru@potato";
 
 WebSocketsServer webSocket(81);
 
