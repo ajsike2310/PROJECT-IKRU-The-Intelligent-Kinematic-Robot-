@@ -36,16 +36,17 @@ class RobotController:
 
     def _connect(self):
         candidates = [self.ip] if self.ip else []
-        for candidate in ["192.168.4.3", "192.168.4.2", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
+        for candidate in ["192.168.4.2", "192.168.4.3", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
             if candidate not in candidates:
                 candidates.append(candidate)
 
         for target_ip in candidates:
             try:
                 print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
+                timeout_s = 4.0 if target_ip == self.ip else 1.5
                 self.ws = websocket.create_connection(
                     f"ws://{target_ip}:{self.port}",
-                    timeout=1.5,
+                    timeout=timeout_s,
                     http_proxy_host=None,
                     http_proxy_port=None
                 )

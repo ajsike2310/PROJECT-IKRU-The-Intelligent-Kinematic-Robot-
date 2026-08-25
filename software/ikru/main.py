@@ -13,7 +13,7 @@ from ikru.robot import RobotController
 from ikru.vision import VisionReceiver, VLMClient
 
 # Configuration (Standalone AP Mode — Everything via IKRU-CAM)
-ROBOT_IP = "192.168.4.3"    # Body & OLED Controller connected to IKRU-CAM AP
+ROBOT_IP = "192.168.4.2"    # Body & OLED Controller connected to IKRU-CAM AP
 CAM_IP = "192.168.4.1"      # Head Unit (Camera + Speaker AP Gateway)
 ENABLE_VISION = True       # Set to True when connected to IKRU-CAM
 
