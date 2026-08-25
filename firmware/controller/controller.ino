@@ -752,12 +752,17 @@ void setup() {
 
   Serial.println("Connecting to WiFi...");
 
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
+
+  WiFi.setSleep(false);
 
   Serial.println();
   Serial.println("Connected!");

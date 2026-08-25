@@ -66,11 +66,6 @@ class RobotController:
             return
         try:
             self.ws.send(cmd)
-            try:
-                reply = self.ws.recv()
-                print(f"[Robot] {reply.strip()}")
-            except Exception:
-                pass
         except Exception as e:
             print(f"[Robot] Send error: {e}")
             self.connected = False
