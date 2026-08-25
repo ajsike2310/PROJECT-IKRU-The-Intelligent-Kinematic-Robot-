@@ -349,9 +349,12 @@ void parseAudioCommand(String cmd) {
 void pollAudioServer() {
     WiFiClient client = audioServer.available();
     if (client) {
-        String line = client.readStringUntil('\n');
-        parseAudioCommand(line);
-        client.println("OK");
+        client.setTimeout(20);
+        if (client.available()) {
+            String line = client.readStringUntil('\n');
+            parseAudioCommand(line);
+            client.println("OK");
+        }
         client.stop();
     }
 }
