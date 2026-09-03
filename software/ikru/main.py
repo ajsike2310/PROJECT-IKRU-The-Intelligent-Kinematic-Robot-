@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import threading
+import speech_recognition as sr
 
 # Ensure parent directory (containing 'ikru') is in sys.path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,8 +17,9 @@ from ikru.vision import VisionReceiver, VLMClient
 ROBOT_IP = "192.168.4.2"    # Body & OLED Controller connected to IKRU-CAM AP
 CAM_IP = "192.168.4.1"      # Head Unit (Camera + Speaker AP Gateway)
 ENABLE_VISION = True       # Set to True when connected to IKRU-CAM
+ENABLE_MIC = True          # Use microphone for voice commands instead of text input
 
-LLM_MODEL = "qwen2.5:3b"
+LLM_MODEL = "qwen2.5:7b"
 VLM_MODEL = "qwen3-vl:4b"
 
 VISUAL_KEYWORDS = [
@@ -41,6 +43,23 @@ def main():
     # Play startup greeting chime
     robot.play_sound("happy", 0.7)
 
+    # Initialize Microphone if enabled
+    use_mic = ENABLE_MIC
+    recognizer = None
+    mic = None
+    if use_mic:
+        try:
+            print("[Audio] Initializing Microphone...")
+            recognizer = sr.Recognizer()
+            mic = sr.Microphone()
+            with mic as source:
+                print("[Audio] Calibrating ambient noise... please wait 2 seconds.")
+                recognizer.adjust_for_ambient_noise(source, duration=2)
+            print("[Audio] Microphone ready.")
+        except Exception as e:
+            print(f"[Audio] Error initializing microphone: {e}")
+            use_mic = False  # Fallback to text input
+
     vision = None
     vlm = None
 
@@ -55,16 +74,37 @@ def main():
             print(f"[Vision] Could not start vision receiver: {e}")
 
     def chat_loop():
+        nonlocal use_mic
         while True:
-            try:
-                user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
+            user_input = ""
+            if use_mic and recognizer and mic:
+                print("\n🎤 Listening... (Say 'exit' to quit)")
+                try:
+                    with mic as source:
+                        audio_data = recognizer.listen(source, timeout=None, phrase_time_limit=None)
+                    print("  [Processing audio...]")
+                    user_input = recognizer.recognize_google(audio_data)
+                    print(f"You (Voice): {user_input}")
+                except sr.UnknownValueError:
+                    print("  [Could not understand audio. Try again]")
+                    continue
+                except sr.RequestError as e:
+                    print(f"  [STT Error: {e}]")
+                    continue
+                except Exception as e:
+                    print(f"  [Mic Error: {e}]")
+                    use_mic = False
+                    continue
+            else:
+                try:
+                    user_input = input("\nYou: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
 
             if not user_input:
                 continue
 
-            if user_input.lower() == "exit":
+            if user_input.lower().strip() == "exit":
                 break
 
             # Indicate thinking state on OLED & audio
@@ -117,6 +157,9 @@ def main():
     except KeyboardInterrupt:
         print("\n[IKRU] Exiting...")
     finally:
+        print("\n[IKRU] Shutting down...")
+        robot.play_sound("sad", 0.7)
+        time.sleep(1.0)  # Wait for the sound to play before closing connection
         if vision:
             vision.stop()
         robot.close()
