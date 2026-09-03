@@ -35,6 +35,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.wav
+**/scratch/
 
 # C extensions
 *.so
@@ -202,3 +204,12 @@ cython_debug/
 
 # Arduino build folder
 build/
+
+# Downloaded ML model weights (large binary files, auto-downloaded at runtime)
+src/models/
+
+# AI context files (internal, not for version control)
+.agents/master_project_prompt.md
+
+# Python cache
+src/__pycache__/

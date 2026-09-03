@@ -1,0 +1,52 @@
+{
+  "project_name": "PROJECT IKRU",
+  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets, with dedicated AP-mode UDP camera streaming from an ESP32-CAM.",
+  "structure": {
+    "software": {
+      "path": "software/ikru/",
+      "packages": {
+        "chat": {
+          "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying.",
+          "prompts.py": "System prompt, identity, emotion rules, and movement tool instructions.",
+          "parser.py": "Extracts [emotion] tags and parses tool calls from LLM JSON responses."
+        },
+        "vision": {
+          "receiver.py": "VisionReceiver class handling AP discovery handshake (port 2223) and reassembling 22-byte header UDP packets into frames (port 2222).",
+          "frame_buffer.py": "Thread-safe latest-frame buffer with zero queue buildup.",
+          "vlm.py": "VLMClient for on-demand visual reasoning with Qwen3-VL/LLaVA."
+        },
+        "audio": {
+          "__init__.py": "Exposes SonicEmotionEngine, SonicClient, and DroidStep.",
+          "engine.py": "SonicEmotionEngine for R2-D2 Astromech prosody/WAV synthesis and SonicClient for TCP communication with ESP32-CAM Head Unit (192.168.4.1:5000)."
+        },
+        "robot": {
+          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81, motor/OLED commands, and integrated SonicClient for synchronized R2-D2 droid vocalizations.",
+          "protocol.py": "Command strings, constants, and scroll timing calculations for OLED speech box."
+        },
+        "main.py": "Main CLI loop integrating ChatEngine, RobotController (with SonicClient), and VisionReceiver."
+      }
+    },
+    "firmware": {
+      "controller": {
+        "path": "firmware/controller/controller.ino",
+        "purpose": "ESP32 Body & OLED firmware managing WebSocket server, DRV8833 dual motors, and speech scrolling."
+      },
+      "head": {
+        "path": "firmware/head/head.ino",
+        "purpose": "ESP32-CAM Head Unit ('IKRU-CAM' / 192.168.4.1) firmware streaming UDP video on port 2222 with discovery on port 2223, and driving SmartElex speaker R2-D2 glissando sweeps on GPIO 2 via TCP on port 5000."
+      }
+    },
+    "tests": {
+      "vision": {
+        "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
+      },
+      "audio": {
+        "test_sonic_emotion.py": "Automated unit tests covering all 18+ R2-D2 droid vocalizations, glissando sweeps, intensity levels, intent blending, sentence prosody, and ESP32 command serialization.",
+        "interactive_test.py": "Interactive CLI test harness supporting arbitrary natural sentence replication into R2-D2 vocalizations, word-length driven durations, ASCII sweep ladders, PC audio preview, and direct WebSocket transmission to ESP32 AP (ws://192.168.4.1:81)."
+      },
+      "test_integrated_audio.py": "Integration test for SonicClient and RobotController.",
+      "test_robot.py": "WebSocket command tester script.",
+      "test_socket.py": "TCP port 81 reachability tester script."
+    }
+  }
+}
