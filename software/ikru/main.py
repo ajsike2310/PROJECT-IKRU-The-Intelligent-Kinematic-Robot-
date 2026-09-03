@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import threading
-
 # Ensure parent directory (containing 'ikru') is in sys.path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
@@ -16,8 +15,9 @@ from ikru.vision import VisionReceiver, VLMClient
 ROBOT_IP = "192.168.4.2"    # Body & OLED Controller connected to IKRU-CAM AP
 CAM_IP = "192.168.4.1"      # Head Unit (Camera + Speaker AP Gateway)
 ENABLE_VISION = True       # Set to True when connected to IKRU-CAM
+ENABLE_MIC = True          # Use microphone for voice commands instead of text input
 
-LLM_MODEL = "qwen2.5:3b"
+LLM_MODEL = "qwen2.5:7b"
 VLM_MODEL = "qwen3-vl:4b"
 
 VISUAL_KEYWORDS = [
@@ -41,6 +41,17 @@ def main():
     # Play startup greeting chime
     robot.play_sound("happy", 0.7)
 
+    # Initialize Microphone if enabled
+    use_mic = ENABLE_MIC
+    mic_controller = None
+    if use_mic:
+        try:
+            from ikru.mic import MicController
+            mic_controller = MicController()
+        except Exception as e:
+            print(f"[Audio] Error initializing microphone: {e}")
+            use_mic = False  # Fallback to text input
+
     vision = None
     vlm = None
 
@@ -55,16 +66,30 @@ def main():
             print(f"[Vision] Could not start vision receiver: {e}")
 
     def chat_loop():
+        nonlocal use_mic
         while True:
-            try:
-                user_input = input("\nYou: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
+            user_input = ""
+            if use_mic and mic_controller:
+                try:
+                    user_input = mic_controller.listen()
+                    if user_input:
+                        print(f"You (Voice): {user_input}")
+                    else:
+                        continue
+                except Exception as e:
+                    print(f"  [Mic Error: {e}]")
+                    use_mic = False
+                    continue
+            else:
+                try:
+                    user_input = input("\nYou: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
 
             if not user_input:
                 continue
 
-            if user_input.lower() == "exit":
+            if user_input.lower().strip() == "exit":
                 break
 
             # Indicate thinking state on OLED & audio
@@ -117,6 +142,9 @@ def main():
     except KeyboardInterrupt:
         print("\n[IKRU] Exiting...")
     finally:
+        print("\n[IKRU] Shutting down...")
+        robot.play_sound("sad", 0.7)
+        time.sleep(1.0)  # Wait for the sound to play before closing connection
         if vision:
             vision.stop()
         robot.close()

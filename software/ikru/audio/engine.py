@@ -208,9 +208,14 @@ class SonicEmotionEngine:
 
     def _generate_sleepy(self, intensity: float) -> List[DroidStep]:
         return [
-            self._chirp(1600, 1200, 160, 40),
-            self._chirp(1100, 700, 200, 50),
-            self._chirp(650, 220, 320, 0),
+            # Inhale (snore in)
+            self._chirp(150, 300, 800 + int(200 * intensity), 300),
+            # Exhale (snore out)
+            self._chirp(300, 100, 1000 + int(300 * intensity), 600),
+            # Inhale
+            self._chirp(150, 300, 800 + int(200 * intensity), 300),
+            # Exhale
+            self._chirp(300, 100, 1000 + int(300 * intensity), 0),
         ]
 
     def _generate_affection(self, intensity: float) -> List[DroidStep]:
