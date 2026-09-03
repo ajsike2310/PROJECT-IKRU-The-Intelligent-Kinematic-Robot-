@@ -2,8 +2,6 @@ import os
 import sys
 import time
 import threading
-import speech_recognition as sr
-
 # Ensure parent directory (containing 'ikru') is in sys.path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
@@ -45,17 +43,11 @@ def main():
 
     # Initialize Microphone if enabled
     use_mic = ENABLE_MIC
-    recognizer = None
-    mic = None
+    mic_controller = None
     if use_mic:
         try:
-            print("[Audio] Initializing Microphone...")
-            recognizer = sr.Recognizer()
-            mic = sr.Microphone()
-            with mic as source:
-                print("[Audio] Calibrating ambient noise... please wait 2 seconds.")
-                recognizer.adjust_for_ambient_noise(source, duration=2)
-            print("[Audio] Microphone ready.")
+            from ikru.mic import MicController
+            mic_controller = MicController()
         except Exception as e:
             print(f"[Audio] Error initializing microphone: {e}")
             use_mic = False  # Fallback to text input
@@ -77,20 +69,13 @@ def main():
         nonlocal use_mic
         while True:
             user_input = ""
-            if use_mic and recognizer and mic:
-                print("\n🎤 Listening... (Say 'exit' to quit)")
+            if use_mic and mic_controller:
                 try:
-                    with mic as source:
-                        audio_data = recognizer.listen(source, timeout=None, phrase_time_limit=None)
-                    print("  [Processing audio...]")
-                    user_input = recognizer.recognize_google(audio_data)
-                    print(f"You (Voice): {user_input}")
-                except sr.UnknownValueError:
-                    print("  [Could not understand audio. Try again]")
-                    continue
-                except sr.RequestError as e:
-                    print(f"  [STT Error: {e}]")
-                    continue
+                    user_input = mic_controller.listen()
+                    if user_input:
+                        print(f"You (Voice): {user_input}")
+                    else:
+                        continue
                 except Exception as e:
                     print(f"  [Mic Error: {e}]")
                     use_mic = False
