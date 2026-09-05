@@ -7,12 +7,12 @@
       "packages": {
         "audio": {
           "__init__.py": "Exposes AudioService.",
-          "service.py": "AudioService class managing edge-tts natural speech synthesis, 44.1kHz 16-bit stereo WAV resampling, and local background HTTP streaming on port 8000."
+          "service.py": "AudioService class managing edge-tts natural speech synthesis, 44.1kHz 16-bit stereo WAV resampling, local background HTTP streaming on port 8000, and synthesized speech duration tracking (last_duration)."
         },
         "chat": {
           "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying.",
           "prompts.py": "System prompt, identity, emotion rules, and movement tool instructions.",
-          "parser.py": "Extracts [emotion] tags and parses tool calls from LLM JSON responses."
+          "parser.py": "Extracts [emotion] tags and parses tool calls from LLM JSON responses.",
         },
         "vision": {
           "receiver.py": "VisionReceiver class handling AP discovery handshake (port 2223) and reassembling 22-byte header UDP packets into frames (port 2222).",
@@ -24,8 +24,8 @@
           "controller.py": "MicController class handling PyAudio/SpeechRecognition initialization, ambient noise calibration, and Google Speech-to-Text."
         },
         "robot": {
-          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 with keep-alive pings, background auto-reconnect, motor movements, OLED eye/speech box animations, and I2S audio playback (SPEAK_URL / STOP_AUDIO).",
-          "protocol.py": "Command strings, constants, and scroll timing calculations for OLED speech box."
+          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 with keep-alive pings, background auto-reconnect, motor movements, full-screen OLED animated eye expressions (with speech text box removed), and I2S audio playback (SPEAK_URL / STOP_AUDIO) synchronized with emotion duration.",
+          "protocol.py": "Command strings, constants, and scroll timing calculations."
         },
         "main.py": "Main CLI loop integrating ChatEngine, RobotController, VisionReceiver, MicController, and AudioService."
       }
@@ -33,7 +33,7 @@
     "firmware": {
       "controller": {
         "path": "firmware/controller/controller.ino",
-        "purpose": "ESP32 Body & OLED firmware managing WebSocket server (port 81), MAX98357A I2S natural voice streaming on Core 0, DRV8833 dual motors (remapped to GPIO 18/19), and speech scrolling/eye animations.",
+        "purpose": "ESP32 Body & OLED firmware managing WebSocket server (port 81), MAX98357A I2S natural voice streaming on Core 0, DRV8833 dual motors (remapped to GPIO 18/19), and full-screen eye animations with blinking, emotion transitions, and eye tracking without speech text box overlay.",
         "target_board": "ESP32 Dev Module (esp32:esp32:esp32)",
         "upload_port": "COM7",
         "toolchain": "arduino-cli",

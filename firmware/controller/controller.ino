@@ -993,9 +993,6 @@ void loop() {
   // WebSocket
   webSocket.loop();
 
-  // Update speech scroll (returns early if not in speaking mode)
-  updateSpeechScroll();
-
   unsigned long now = millis();
   float dt = (now - animationLastMillis) / 1000.0;
   animationLastMillis = now;
@@ -1015,13 +1012,7 @@ void loop() {
   // Clear buffer for new frame
   u8g2.clearBuffer();
 
-  // Draw speech box whenever it has any width
-  // (speaking, waiting between segments, or during open/close animation)
-  if (speechBoxWidth > 0) {
-    drawSpeakingText();
-  }
-
-  // Draw eyes (handles blinking, random looks, etc.)
+  // Draw full-screen animated eyes (handles blinking, expressions, eye tracking)
   face->Update();
 
   // Render to OLED
@@ -1040,14 +1031,14 @@ void webSocketEvent(uint8_t client, WStype_t type, uint8_t *payload,
     // CONNECTED
   case WStype_CONNECTED:
     Serial.println("Client Connected");
-    oledMessage("Connected!");
+    emotionHappy();
     break;
 
     // DISCONNECTED
   case WStype_DISCONNECTED:
     Serial.println("Client Disconnected");
     stopMotors();
-    oledMessage("Disconnected");
+    emotionNormal();
     break;
 
     // TEXT
@@ -1076,24 +1067,16 @@ void parseCommand(String input) {
   input.trim();
 
   // ==========================================================
-  // DISPLAY COMMAND
-  //
-  // DISPLAY:Hello there!
+  // DISPLAY COMMANDS (No-op now that natural voice is active)
   // ==========================================================
 
-  if (input == "DISPLAY_OPEN") {
-    oledOpen();
-    return;
-  }
-
-  if (input == "DISPLAY_CLOSE") {
-    oledClose();
+  if (input == "DISPLAY_OPEN" || input == "DISPLAY_CLOSE") {
     return;
   }
 
   if (input.startsWith("DISPLAY:")) {
-    String message = input.substring(8);
-    oledMessage(message);
+    Serial.print("Display text (voice mode): ");
+    Serial.println(input.substring(8));
     return;
   }
 

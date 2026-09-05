@@ -40,6 +40,7 @@ class AudioService:
         self._server_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._running = False
+        self.last_duration: float = 0.0
 
         self._start_server()
 
@@ -128,6 +129,7 @@ class AudioService:
                 else:
                     stereo_data = data
 
+                self.last_duration = float(len(data) / target_rate)
                 sf.write(self.wav_path, stereo_data, target_rate, subtype="PCM_16")
 
                 # Clean up temporary mp3

@@ -168,34 +168,39 @@ class RobotController:
         """
         Coordinates speech response:
         - Synthesizes and streams natural voice audio over I2S (via AudioService).
-        - Animates eye expressions on ESP32 Body OLED.
-        - Scrolls text response across OLED speech box.
+        - Displays full-screen animated facial expressions on ESP32 Body OLED.
+        - Synchronizes emotion transitions with the speech playback duration.
         """
         if not segments:
             return
 
-        # 1. Trigger natural voice synthesis & playback over I2S if available
         svc = audio_service or getattr(self, "audio_service", None)
-        if svc:
-            full_text = " ".join(txt for _, txt in segments if txt).strip()
-            if full_text:
-                audio_url = svc.synthesize(full_text)
-                if audio_url:
-                    self.play_audio(audio_url)
+        full_text = " ".join(txt for _, txt in segments if txt).strip()
 
-        # 2. Display text and animate emotions on OLED
-        self.display_open()
+        audio_url = None
+        duration = 0.0
+
+        if svc and full_text:
+            audio_url = svc.synthesize(full_text)
+            duration = getattr(svc, "last_duration", 0.0)
+
+        # Start streaming natural voice via I2S
+        if audio_url:
+            self.play_audio(audio_url)
+
+        # Distribute playback duration across emotion segments
+        total_len = max(1, sum(len(txt.strip()) for _, txt in segments if txt))
+        if duration <= 0:
+            duration = max(2.0, len(full_text) * 0.06)
+
         for emotion, text in segments:
-            # Update eye animation on OLED
             self.set_emotion(emotion)
+            seg_len = len(text.strip()) if text else 1
+            seg_time = max(0.8, (seg_len / total_len) * duration)
+            time.sleep(seg_time)
 
-            if text:
-                # Display text and wait for scroll completion
-                self.display(text)
-                wait_time = calculate_speech_scroll_time(text)
-                time.sleep(wait_time)
-
-        self.display_close()
+        # Return to calm normal expression once speaking finishes
+        self.normal()
 
     # Emotions
     def set_emotion(self, emotion):
