@@ -55,7 +55,8 @@
     "tests": {
       "audio": {
         "esp32_test_receiver.ino": "Standalone ESP32 I2S WAV streaming firmware (MAX98357A on GPIO 25/26/27, 44.1kHz stereo 16-bit).",
-        "test_audio_server.py": "Local HTTP audio server (port 8000) with edge-tts speech synthesis and 44.1kHz stereo WAV resampling."
+        "test_audio_server.py": "Local HTTP audio server (port 8000) with edge-tts speech synthesis and 44.1kHz stereo WAV resampling.",
+        "test_tts_comparison.py": "Interactive TTS expressiveness and accent comparison suite evaluating Chatterbox-Nano (paralinguistic tags like [chuckle], [laugh], [sigh], [gasp]) and Edge-TTS regional accents (US, UK, Australian, Indian) with local PC playback and optional streaming to the ESP32 robot speaker."
       },
       "vision": {
         "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
