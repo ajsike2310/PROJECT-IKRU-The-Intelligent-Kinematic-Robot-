@@ -2,24 +2,43 @@ import re
 import json
 
 
+# OLED facial emotion names (distinct from TTS voice tags like [chuckle], [laugh], [sigh])
+OLED_EMOTIONS = [
+    "normal", "happy", "glee", "sad", "worried", "focused", "annoyed",
+    "surprised", "skeptic", "frustrated", "unimpressed", "sleepy",
+    "suspicious", "squint", "angry", "furious", "scared", "awe"
+]
+EMOTION_REGEX = re.compile(r'\[(' + '|'.join(OLED_EMOTIONS) + r')\]', re.IGNORECASE)
+
+
 def parse_segments(text):
     """
-    Splits a response string containing inline [emotion] tags into
-    a list of (emotion, text) tuples for OLED and facial expression rendering.
+    Splits a response string containing inline OLED [emotion] tags into
+    a list of (emotion, text) tuples for facial expression rendering.
+    Preserves Chatterbox paralinguistic voice tags ([chuckle], [laugh], [sigh],
+    [gasp], [clear throat]) inside the text content for the speech synthesizer.
 
     Example input:
-      "[worried]Hmm, I'm not sure... [focused]Let me think... [happy]Actually yes!"
+      "[happy]Hi there [chuckle]! [focused]Let me compute that... [glee]Done!"
 
     Example output:
-      [("worried", "Hmm, I'm not sure..."),
-       ("focused", "Let me think..."),
-       ("happy", "Actually yes!")]
+      [("happy", "Hi there [chuckle]!"),
+       ("focused", "Let me compute that..."),
+       ("glee", "Done!")]
     """
-    matches = re.findall(r'\[([a-z]+)\]([^\[]*)', text)
+    if not text or not text.strip():
+        return []
+
+    parts = EMOTION_REGEX.split(text)
     segments = []
 
-    for emotion, chunk in matches:
-        chunk = chunk.strip()
+    # Handle text preceding the first emotion tag
+    if parts[0].strip():
+        segments.append(("normal", parts[0].strip()))
+
+    for i in range(1, len(parts), 2):
+        emotion = parts[i].lower()
+        chunk = parts[i + 1].strip() if i + 1 < len(parts) else ""
         if chunk:
             segments.append((emotion, chunk))
 

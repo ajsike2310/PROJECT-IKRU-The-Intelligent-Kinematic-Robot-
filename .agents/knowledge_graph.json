@@ -7,12 +7,12 @@
       "packages": {
         "audio": {
           "__init__.py": "Exposes AudioService.",
-          "service.py": "AudioService class managing edge-tts natural speech synthesis, 44.1kHz 16-bit stereo WAV resampling, local background HTTP streaming on port 8000, and synthesized speech duration tracking (last_duration)."
+          "service.py": "AudioService class managing Chatterbox-Nano primary speech synthesis with pre-cached custom cloned reference voice (ikru_voice.wav), phonetic word normalization for 'Ikru', paralinguistic tag preservation, 44.1kHz 16-bit stereo WAV resampling, local background HTTP streaming on port 8000, and Edge-TTS fallback."
         },
         "chat": {
           "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying.",
-          "prompts.py": "System prompt, identity, emotion rules, and movement tool instructions.",
-          "parser.py": "Extracts [emotion] tags and parses tool calls from LLM JSON responses.",
+          "prompts.py": "System prompt, robot identity with strict 'Ikru' name capitalization rule, natural voice expressive paralinguistic sound tags ([chuckle], [laugh], [sigh], [gasp], [clear throat]), OLED emotion rules, and movement tool instructions.",
+          "parser.py": "Extracts OLED facial expression [emotion] tags while preserving Chatterbox paralinguistic sound tags inside spoken text chunks, and parses tool calls from LLM JSON responses."
         },
         "vision": {
           "receiver.py": "VisionReceiver class handling AP discovery handshake (port 2223) and reassembling 22-byte header UDP packets into frames (port 2222).",
