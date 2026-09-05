@@ -1,7 +1,10 @@
 #include "Face.h"
+#include <HTTPClient.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <Wire.h>
+#include "ESP_I2S.h"
 
 // ============================================================
 // IKRU DESK COMPANION ROBOT
@@ -11,6 +14,7 @@
 // DRV8833 Dual H-Bridge Motor Driver
 // 2x DC Motor
 // SSD1306 128x64 I2C OLED (driven via U8g2 through the Face library)
+// MAX98357A I2S DAC Amplifier + Speaker
 //
 // Communication:
 // WiFi + WebSocket
@@ -21,11 +25,13 @@
 // ============================================================
 
 // ============================================================
-// WIFI (Connecting to IKRU-CAM Head Access Point)
+// WIFI (Connecting to GNXS-2.4G-C457E1 or IKRU-CAM Head Access Point)
 // ============================================================
 
-const char *ssid = "IKRU-CAM";
-const char *password = "ikru@potato";
+const char *primary_ssid = "GNXS-2.4G-C457E1";
+const char *primary_pass = "1234567890";
+const char *fallback_ssid = "IKRU-CAM";
+const char *fallback_pass = "ikru@potato";
 
 WebSocketsServer webSocket(81);
 
@@ -37,13 +43,33 @@ WebSocketsServer webSocket(81);
 #define EN1 13
 #define EN2 33
 
-// Left motor
-#define C1A 26
-#define C1B 27
+// Left motor (remapped to GPIO 18 & 19 to avoid conflict with I2S audio on GPIO 26 & 27)
+#define C1A 18
+#define C1B 19
 
 // Right motor
 #define C2A 14
 #define C2B 12
+
+// ============================================================
+// MAX98357A / I2S AUDIO
+// ============================================================
+
+I2SClass I2S;
+
+#define I2S_WS 25
+#define I2S_BCLK 26
+#define I2S_DOUT 27
+
+#define AUDIO_SAMPLE_RATE 44100
+#define AUDIO_BUFFER_SIZE 16384
+
+uint8_t audioBuffer[AUDIO_BUFFER_SIZE];
+char pendingAudioURL[256] = "";
+volatile bool hasAudioRequest = false;
+volatile bool isAudioPlaying = false;
+volatile bool stopAudioRequested = false;
+TaskHandle_t audioTaskHandle = NULL;
 
 // ============================================================
 // OLED MODES
@@ -721,6 +747,153 @@ void showWiFiConnected() {
 }
 
 // ============================================================
+// AUDIO STREAMING & PLAYBACK (I2S MAX98357A)
+// ============================================================
+
+static inline uint16_t readLE16(uint8_t *p) {
+  return ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
+}
+
+static inline uint32_t readLE32(uint8_t *p) {
+  return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+bool readExact(WiFiClient &stream, uint8_t *buffer, size_t length) {
+  size_t received = 0;
+  while (received < length && !stopAudioRequested) {
+    if (stream.available()) {
+      int n = stream.read(buffer + received, length - received);
+      if (n > 0) received += n;
+    } else {
+      if (!stream.connected()) return false;
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+  return (received == length);
+}
+
+bool skipBytes(WiFiClient &stream, uint32_t length) {
+  uint8_t temp[64];
+  while (length > 0 && !stopAudioRequested) {
+    size_t amount = min(length, (uint32_t)sizeof(temp));
+    if (!readExact(stream, temp, amount)) return false;
+    length -= amount;
+  }
+  return (length == 0);
+}
+
+bool findWavData(WiFiClient &stream, uint32_t &dataSize) {
+  uint8_t header[12];
+  if (!readExact(stream, header, 12)) {
+    Serial.println("[Audio] Cannot read WAV header");
+    return false;
+  }
+
+  if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+    Serial.println("[Audio] Invalid WAV header (not RIFF/WAVE)");
+    return false;
+  }
+
+  bool foundFmt = false;
+  while (stream.connected() && !stopAudioRequested) {
+    uint8_t chunkHeader[8];
+    if (!readExact(stream, chunkHeader, 8)) return false;
+
+    uint32_t chunkSize = readLE32(chunkHeader + 4);
+
+    if (memcmp(chunkHeader, "fmt ", 4) == 0) {
+      uint8_t fmt[16];
+      if (!readExact(stream, fmt, 16)) return false;
+
+      uint16_t format     = readLE16(fmt);
+      uint16_t channels   = readLE16(fmt + 2);
+      uint32_t sampleRate = readLE32(fmt + 4);
+      uint16_t bits       = readLE16(fmt + 14);
+
+      if (format != 1 || channels != 2 || sampleRate != 44100 || bits != 16) {
+        Serial.printf("[Audio] Unsupported format: fmt=%u, ch=%u, rate=%lu, bits=%u\n",
+                      format, channels, sampleRate, bits);
+        return false;
+      }
+
+      if (chunkSize > 16) {
+        if (!skipBytes(stream, chunkSize - 16)) return false;
+      }
+      foundFmt = true;
+
+    } else if (memcmp(chunkHeader, "data", 4) == 0) {
+      dataSize = chunkSize;
+      return foundFmt;
+
+    } else {
+      if (!skipBytes(stream, chunkSize)) return false;
+    }
+  }
+
+  return false;
+}
+
+void audioPlaybackTask(void *pvParameters) {
+  while (true) {
+    if (hasAudioRequest) {
+      hasAudioRequest = false;
+      isAudioPlaying = true;
+      stopAudioRequested = false;
+
+      String url = String(pendingAudioURL);
+      Serial.print("[Audio] Connecting to: ");
+      Serial.println(url);
+
+      HTTPClient http;
+      http.begin(url);
+      int httpCode = http.GET();
+
+      if (httpCode == HTTP_CODE_OK) {
+        WiFiClient *stream = http.getStreamPtr();
+        uint32_t dataSize = 0;
+
+        if (findWavData(*stream, dataSize)) {
+          Serial.printf("[Audio] Streaming %lu bytes to I2S...\n", dataSize);
+          uint32_t remaining = dataSize;
+
+          while (remaining > 0 && stream->connected() && !stopAudioRequested) {
+            size_t toRead = min((uint32_t)AUDIO_BUFFER_SIZE, remaining);
+            toRead -= toRead % 4; // 16-bit stereo frame boundary
+
+            size_t bytesRead = 0;
+            while (bytesRead < toRead && !stopAudioRequested) {
+              if (stream->available()) {
+                int n = stream->read(audioBuffer + bytesRead, toRead - bytesRead);
+                if (n > 0) bytesRead += n;
+              } else {
+                if (!stream->connected()) break;
+                vTaskDelay(pdMS_TO_TICKS(1));
+              }
+            }
+
+            if (bytesRead == 0) break;
+            I2S.write(audioBuffer, bytesRead);
+            remaining -= bytesRead;
+          }
+          Serial.println("[Audio] Finished playback");
+        } else {
+          Serial.println("[Audio] WAV parsing failed");
+        }
+      } else {
+        Serial.printf("[Audio] HTTP GET failed: %d\n", httpCode);
+      }
+
+      http.end();
+      isAudioPlaying = false;
+      stopAudioRequested = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 
@@ -747,6 +920,22 @@ void setup() {
   // OLED + Face library init
   oledStartup();
 
+  // ============================================================
+  // I2S AUDIO (MAX98357A)
+  // ============================================================
+  Serial.println("Starting I2S Audio...");
+  I2S.setPins(I2S_BCLK, I2S_WS, I2S_DOUT);
+  if (!I2S.begin(I2S_MODE_STD, AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
+                 I2S_SLOT_MODE_STEREO)) {
+    Serial.println("[Audio] I2S initialization FAILED!");
+  } else {
+    Serial.println("[Audio] I2S ready");
+  }
+
+  // Pin audio playback task to Core 0 (leaving Core 1 for OLED & WebSocket loops)
+  xTaskCreatePinnedToCore(audioPlaybackTask, "audioTask", 10240, NULL, 1,
+                          &audioTaskHandle, 0);
+
   // WiFi
   showConnecting();
 
@@ -755,11 +944,23 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  WiFi.begin(ssid, password);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  WiFi.begin(primary_ssid, primary_pass);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 25) {
     delay(500);
     Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nTrying fallback AP (IKRU-CAM)...");
+    WiFi.begin(fallback_ssid, fallback_pass);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
   }
 
   WiFi.setSleep(false);
@@ -893,6 +1094,25 @@ void parseCommand(String input) {
   if (input.startsWith("DISPLAY:")) {
     String message = input.substring(8);
     oledMessage(message);
+    return;
+  }
+
+  // ==========================================================
+  // AUDIO COMMANDS (Case-sensitive URLs)
+  // ==========================================================
+
+  if (input.startsWith("SPEAK_URL:") || input.startsWith("AUDIO:")) {
+    int idx = input.indexOf(':');
+    String url = input.substring(idx + 1);
+    url.trim();
+    strncpy(pendingAudioURL, url.c_str(), sizeof(pendingAudioURL) - 1);
+    pendingAudioURL[sizeof(pendingAudioURL) - 1] = '\0';
+    hasAudioRequest = true;
+    return;
+  }
+
+  if (input == "STOP_AUDIO") {
+    stopAudioRequested = true;
     return;
   }
 

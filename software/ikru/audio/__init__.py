@@ -1,16 +1,8 @@
 """
-===============================================================================
-PROJECT IKRU — AUDIO & SONIC EMOTIONS PACKAGE
-===============================================================================
-Exposes SonicEmotionEngine for R2-D2 droid vocalizations, sentiment prosody,
-and SonicClient for communication with ESP32-CAM (Head / Speaker).
-===============================================================================
+IKRU Audio Package
+Provides natural voice synthesis (edge-tts) and local HTTP audio serving for ESP32 I2S streaming.
 """
 
-from .engine import SonicEmotionEngine, DroidStep, SonicClient
+from ikru.audio.service import AudioService
 
-__all__ = [
-    "SonicEmotionEngine",
-    "DroidStep",
-    "SonicClient",
-]
+__all__ = ["AudioService"]

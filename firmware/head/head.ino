@@ -3,13 +3,12 @@
 #include <WiFiUdp.h>
 
 // =============================================================================
-// PROJECT IKRU — HEAD UNIT (VISION & SONIC VOICE)
-// Hardware: AI-Thinker ESP32-CAM + OV2640 Camera + SmartElex Digital Speaker
+// PROJECT IKRU — HEAD UNIT (VISION STREAMER)
+// Hardware: AI-Thinker ESP32-CAM + OV2640 Camera
 //
 // Capabilities:
 // 1. Wi-Fi Access Point ('IKRU-CAM' @ 192.168.4.1)
 // 2. High-speed UDP Video JPEG Streaming (Port 2222) + Discovery Handshake (Port 2223)
-// 3. Non-blocking R2-D2 Astromech Glissando Speaker PWM on GPIO 2 via TCP (Port 5000)
 // =============================================================================
 
 // ---------------- Wi-Fi AP ----------------
@@ -28,9 +27,6 @@ const uint16_t VIDEO_PORT = 2222;
 IPAddress pcIP;
 bool pcKnown = false;
 
-// ---------------- TCP Audio Command Server ----------------
-WiFiServer audioServer(5000);
-
 // =============================================================================
 // CAMERA SETTINGS & AI-THINKER PIN MAP
 // =============================================================================
@@ -38,6 +34,10 @@ WiFiServer audioServer(5000);
 #define JPEG_QUALITY 20
 #define FB_COUNT     2
 #define CHUNK_SIZE   1200
+
+// Camera Orientation Settings (OV2640)
+#define CAMERA_VFLIP    1  // 1 = Flip vertically (fixes upside-down camera casting)
+#define CAMERA_HMIRROR  0  // 1 = Mirror horizontally (set to 1 if left-to-right is also mirrored)
 
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -59,14 +59,6 @@ WiFiServer audioServer(5000);
 #define PCLK_GPIO_NUM      22
 
 // =============================================================================
-// AUDIO HARDWARE PIN & DEDICATED CHANNEL
-// Channel 2 is used to strictly avoid colliding with Camera XCLK on Channel 0
-// =============================================================================
-#define AUDIO_PIN 2
-#define AUDIO_PWM_CHANNEL 2
-#define AUDIO_PWM_RES 8
-
-// =============================================================================
 // VIDEO PACKET PROTOCOL
 // =============================================================================
 #define MAGIC        0x494B
@@ -86,278 +78,6 @@ struct __attribute__((packed)) CameraPacketHeader {
 };
 
 uint32_t frameId = 0;
-
-// =============================================================================
-// R2-D2 DROID STEP & NON-BLOCKING GLISSANDO SEQUENCER
-// =============================================================================
-struct DroidStep {
-    uint16_t startFreq; // Start frequency in Hz (0 = rest)
-    uint16_t endFreq;   // End frequency in Hz (0 = rest)
-    uint16_t duration;  // Duration in milliseconds
-    uint16_t pause;     // Silence pause in milliseconds
-};
-
-#define MAX_SEQUENCE_STEPS 32
-
-class SonicPlayer {
-private:
-    uint8_t _pin;
-    DroidStep _sequence[MAX_SEQUENCE_STEPS];
-    uint8_t _stepCount = 0;
-    uint8_t _currentStep = 0;
-    uint16_t _lastSetFreq = 0;
-
-    enum PlayerState {
-        IDLE,
-        PLAYING_NOTE,
-        PLAYING_PAUSE
-    };
-
-    PlayerState _state = IDLE;
-    unsigned long _stateStartTime = 0;
-
-    void setHwTone(uint16_t freq) {
-        if (freq == _lastSetFreq) return;
-        _lastSetFreq = freq;
-
-        if (freq > 0) {
-            #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-                ledcWriteTone(_pin, freq);
-            #else
-                ledcWriteTone(AUDIO_PWM_CHANNEL, freq);
-            #endif
-        } else {
-            #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-                ledcWriteTone(_pin, 0);
-            #else
-                ledcWriteTone(AUDIO_PWM_CHANNEL, 0);
-            #endif
-        }
-    }
-
-public:
-    SonicPlayer(uint8_t pin) : _pin(pin) {}
-
-    void begin() {
-        #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-            ledcAttachChannel(_pin, 1000, AUDIO_PWM_RES, AUDIO_PWM_CHANNEL);
-        #else
-            ledcSetup(AUDIO_PWM_CHANNEL, 1000, AUDIO_PWM_RES);
-            ledcAttachPin(_pin, AUDIO_PWM_CHANNEL);
-        #endif
-        setHwTone(0);
-        _state = IDLE;
-    }
-
-    bool isPlaying() const {
-        return _state != IDLE;
-    }
-
-    void stop() {
-        setHwTone(0);
-        _state = IDLE;
-        _stepCount = 0;
-        _currentStep = 0;
-        _lastSetFreq = 0;
-    }
-
-    bool playSequence(const DroidStep *steps, uint8_t count) {
-        if (count == 0) return false;
-        if (count > MAX_SEQUENCE_STEPS) count = MAX_SEQUENCE_STEPS;
-
-        for (uint8_t i = 0; i < count; i++) {
-            _sequence[i] = steps[i];
-        }
-
-        _stepCount = count;
-        _currentStep = 0;
-        _state = PLAYING_NOTE;
-        _stateStartTime = millis();
-        _lastSetFreq = 0;
-
-        setHwTone(_sequence[0].startFreq);
-        return true;
-    }
-
-    // Call on every loop() tick to smoothly interpolate frequency sweeps
-    void update() {
-        if (_state == IDLE) return;
-
-        unsigned long now = millis();
-        unsigned long elapsed = now - _stateStartTime;
-        DroidStep &cur = _sequence[_currentStep];
-
-        if (_state == PLAYING_NOTE) {
-            if (elapsed < cur.duration) {
-                // Continuous glissando frequency interpolation
-                if (cur.startFreq != cur.endFreq && cur.duration > 0) {
-                    float progress = (float)elapsed / (float)cur.duration;
-                    uint16_t currentFreq = cur.startFreq + (uint16_t)((cur.endFreq - cur.startFreq) * progress);
-                    setHwTone(currentFreq);
-                }
-            } else {
-                // Note finished -> switch to pause
-                setHwTone(0);
-                if (cur.pause > 0) {
-                    _state = PLAYING_PAUSE;
-                    _stateStartTime = now;
-                } else {
-                    advanceStep();
-                }
-            }
-        } else if (_state == PLAYING_PAUSE) {
-            if (elapsed >= cur.pause) {
-                advanceStep();
-            }
-        }
-    }
-
-private:
-    void advanceStep() {
-        _currentStep++;
-        if (_currentStep >= _stepCount) {
-            stop();
-        } else {
-            _state = PLAYING_NOTE;
-            _stateStartTime = millis();
-            setHwTone(_sequence[_currentStep].startFreq);
-        }
-    }
-};
-
-SonicPlayer sonicPlayer(AUDIO_PIN);
-
-// =============================================================================
-// R2-D2 SOUND PATTERNS
-// =============================================================================
-const DroidStep PATTERN_HAPPY[] = {
-    {1400, 1850, 45, 10},
-    {1850, 2600, 55, 12},
-    {2600, 3400, 85, 15},
-    {3400, 3600, 180, 0}
-};
-
-const DroidStep PATTERN_EXCITED[] = {
-    {1800, 2400, 35, 6},
-    {2400, 3100, 35, 6},
-    {3100, 3700, 40, 8},
-    {3700, 3200, 45, 6},
-    {3200, 4000, 60, 8},
-    {4000, 4200, 150, 0}
-};
-
-const DroidStep PATTERN_SAD[] = {
-    {2100, 1500, 180, 25},
-    {1450, 850, 230, 30},
-    {800, 320, 300, 0}
-};
-
-const DroidStep PATTERN_CONFUSED[] = {
-    {1500, 1750, 40, 70},
-    {1800, 1450, 45, 55},
-    {950, 2800, 160, 0}
-};
-
-const DroidStep PATTERN_THINKING[] = {
-    {1450, 1600, 30, 80},
-    {1650, 1500, 30, 90},
-    {1750, 1900, 35, 75},
-    {1850, 1700, 40, 0}
-};
-
-const DroidStep PATTERN_SUCCESS[] = {
-    {1200, 1600, 40, 8},
-    {1600, 2100, 45, 10},
-    {2100, 2800, 55, 12},
-    {2800, 3500, 190, 0}
-};
-
-const DroidStep PATTERN_WARNING[] = {
-    {2200, 3400, 50, 15},
-    {3400, 2200, 50, 15},
-    {2200, 3400, 50, 15},
-    {3400, 2200, 50, 0}
-};
-
-const DroidStep PATTERN_NEUTRAL[] = {
-    {1400, 1700, 40, 18},
-    {1700, 2500, 80, 0}
-};
-
-void playEmotion(String emotion) {
-    emotion.toLowerCase();
-    emotion.trim();
-    if (emotion == "happy") sonicPlayer.playSequence(PATTERN_HAPPY, 4);
-    else if (emotion == "excited" || emotion == "glee") sonicPlayer.playSequence(PATTERN_EXCITED, 6);
-    else if (emotion == "sad" || emotion == "worried") sonicPlayer.playSequence(PATTERN_SAD, 3);
-    else if (emotion == "confused" || emotion == "skeptic") sonicPlayer.playSequence(PATTERN_CONFUSED, 3);
-    else if (emotion == "thinking" || emotion == "focused") sonicPlayer.playSequence(PATTERN_THINKING, 4);
-    else if (emotion == "success") sonicPlayer.playSequence(PATTERN_SUCCESS, 4);
-    else if (emotion == "warning" || emotion == "scared") sonicPlayer.playSequence(PATTERN_WARNING, 4);
-    else sonicPlayer.playSequence(PATTERN_NEUTRAL, 2);
-}
-
-// =============================================================================
-// AUDIO COMMAND PARSER
-// =============================================================================
-void parseAudioCommand(String cmd) {
-    cmd.trim();
-    if (cmd.length() == 0) return;
-
-    // 1. TONES:start,end,dur,pause;start,end,dur,pause;...
-    if (cmd.startsWith("TONES:")) {
-        String seqStr = cmd.substring(6);
-        DroidStep steps[MAX_SEQUENCE_STEPS];
-        uint8_t count = 0;
-
-        int start = 0;
-        while (start < (int)seqStr.length() && count < MAX_SEQUENCE_STEPS) {
-            int semi = seqStr.indexOf(';', start);
-            String item = (semi == -1) ? seqStr.substring(start) : seqStr.substring(start, semi);
-            start = (semi == -1) ? seqStr.length() : semi + 1;
-
-            int c1 = item.indexOf(',');
-            int c2 = item.indexOf(',', c1 + 1);
-            int c3 = item.indexOf(',', c2 + 1);
-            if (c1 > 0 && c2 > 0 && c3 > 0) {
-                uint16_t sf = item.substring(0, c1).toInt();
-                uint16_t ef = item.substring(c1 + 1, c2).toInt();
-                uint16_t d = item.substring(c2 + 1, c3).toInt();
-                uint16_t p = item.substring(c3 + 1).toInt();
-                steps[count++] = {sf, ef, d, p};
-            }
-        }
-        if (count > 0) {
-            sonicPlayer.playSequence(steps, count);
-        }
-        return;
-    }
-
-    // 2. SOUND:<EMOTION>:<INTENSITY>
-    if (cmd.startsWith("SOUND:")) {
-        String payload = cmd.substring(6);
-        int colonIdx = payload.indexOf(':');
-        String emo = (colonIdx > 0) ? payload.substring(0, colonIdx) : payload;
-        playEmotion(emo);
-        return;
-    }
-
-    // Fallback: raw emotion name
-    playEmotion(cmd);
-}
-
-void pollAudioServer() {
-    WiFiClient client = audioServer.available();
-    if (client) {
-        client.setTimeout(20);
-        if (client.available()) {
-            String line = client.readStringUntil('\n');
-            parseAudioCommand(line);
-            client.println("OK");
-        }
-        client.stop();
-    }
-}
 
 // =============================================================================
 // CAMERA INITIALIZATION & UDP STREAMING
@@ -396,7 +116,18 @@ bool initCamera() {
     }
 
     esp_err_t err = esp_camera_init(&config);
-    return (err == ESP_OK);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    // Correct image orientation via sensor registers
+    sensor_t* s = esp_camera_sensor_get();
+    if (s != NULL) {
+        s->set_vflip(s, CAMERA_VFLIP);
+        s->set_hmirror(s, CAMERA_HMIRROR);
+    }
+
+    return true;
 }
 
 void startAP() {
@@ -481,42 +212,28 @@ void setup() {
     Serial.println();
     Serial.println("==========================================");
     Serial.println("   PROJECT IKRU — HEAD UNIT FIRMWARE      ");
-    Serial.println("   OV2640 Vision + R2-D2 Voice Sequencer  ");
+    Serial.println("   OV2640 Vision Streaming                ");
     Serial.println("==========================================");
 
-    // 1. MUST initialize Camera FIRST to reserve LEDC Channel 0 (XCLK 20MHz)
+    // 1. Initialize Camera (LEDC Channel 0 for XCLK 20MHz)
     if (!initCamera()) {
         Serial.println("[FATAL] Camera init failed!");
         while (true) delay(1000);
     }
     Serial.println("[CAM] Camera initialized successfully.");
 
-    // 2. Initialize Audio on dedicated Channel 2 (GPIO 2)
-    sonicPlayer.begin();
-    Serial.printf("[AUDIO] Initialized on GPIO %d (Channel 2)\n", AUDIO_PIN);
-
-    // 3. Start AP & Network Services
+    // 2. Start AP & UDP Discovery
     startAP();
     udp.begin(DISCOVERY_PORT);
-    audioServer.begin();
 
-    Serial.println("[READY] Video on UDP 2222 | Discovery on 2223 | Audio on TCP 5000");
-
-    // Play R2-D2 Startup Chime
-    playEmotion("happy");
+    Serial.println("[READY] Video on UDP 2222 | Discovery on 2223");
 }
 
 void loop() {
-    // 1. Non-blocking glissando frequency interpolation
-    sonicPlayer.update();
-
-    // 2. Poll TCP audio commands
-    pollAudioServer();
-
-    // 3. Poll UDP discovery
+    // 1. Poll UDP discovery
     checkDiscovery();
 
-    // 4. Stream video frame if PC is connected
+    // 2. Stream video frame if PC is connected
     if (pcKnown) {
         camera_fb_t* fb = esp_camera_fb_get();
         if (fb) {

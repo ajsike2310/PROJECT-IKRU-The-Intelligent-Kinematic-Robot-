@@ -1,40 +1,41 @@
 import time
+import threading
 import websocket
 from .protocol import calculate_speech_scroll_time, BOX_ANIM_DURATION_S
-from ikru.audio import SonicClient
 
 
 class RobotController:
     """
-    Unified client interface to control IKRU:
-    1. ESP32 Body Controller (ws://{ip}:81) -> DRV8833 motors, OLED eyes, text speech box.
-    2. ESP32-CAM Head Unit ({audio_ip}:5000) -> SmartElex speaker with R2-D2 Astromech audio.
+    Client interface to control IKRU ESP32 Body Controller (ws://{ip}:81):
+    DRV8833 motors, OLED eye animations, and speech text box.
     """
 
     def __init__(
         self,
         ip="192.168.1.37",
         port=81,
-        audio_ip="192.168.4.1",
-        audio_port=5000,
-        enable_local_audio=True,
-        volume=0.20
+        auto_reconnect=True,
+        ping_interval=5,
+        ping_timeout=3,
+        **kwargs
     ):
         self.ip = ip
         self.port = port
+        self.auto_reconnect = auto_reconnect
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
         self.ws = None
         self.connected = False
-        self._connect()
+        self._running = True
+        self._lock = threading.Lock()
 
-        # Initialize Sonic Audio Client targeting ESP32-CAM Head Unit
-        self.sonic = SonicClient(
-            ip=audio_ip,
-            port=audio_port,
-            enable_local_audio=enable_local_audio,
-            volume=volume
-        )
+        self._connect(silent=False)
 
-    def _connect(self):
+        # Start background heartbeat & auto-reconnect worker
+        self._bg_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._bg_thread.start()
+
+    def _connect(self, silent=False):
         candidates = [self.ip] if self.ip else []
         for candidate in ["192.168.4.2", "192.168.4.3", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
             if candidate not in candidates:
@@ -42,33 +43,72 @@ class RobotController:
 
         for target_ip in candidates:
             try:
-                print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
+                if not silent:
+                    print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
                 timeout_s = 4.0 if target_ip == self.ip else 1.5
-                self.ws = websocket.create_connection(
+                new_ws = websocket.create_connection(
                     f"ws://{target_ip}:{self.port}",
                     timeout=timeout_s,
+                    ping_interval=self.ping_interval,
+                    ping_timeout=self.ping_timeout,
                     http_proxy_host=None,
                     http_proxy_port=None
                 )
-                self.ip = target_ip
-                self.connected = True
+                with self._lock:
+                    self.ws = new_ws
+                    self.ip = target_ip
+                    self.connected = True
                 print(f"[Robot] WebSocket connected successfully to {self.ip}!")
-                return
-            except Exception as e:
+                return True
+            except Exception:
                 pass
 
-        print(f"[Robot] Connection failed on candidates {candidates}. Robot body/OLED offline.")
-        self.connected = False
+        if not silent:
+            print(f"[Robot] Connection failed on candidates {candidates}. Robot body/OLED offline.")
+        with self._lock:
+            self.connected = False
+        return False
+
+    def _handle_disconnect(self):
+        with self._lock:
+            if self.ws:
+                try:
+                    self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
+            self.connected = False
+
+    def _heartbeat_loop(self):
+        """Continuously sends low-overhead ping frames and automatically reconnects if offline."""
+        while self._running:
+            time.sleep(self.ping_interval)
+            if not self._running:
+                break
+
+            if self.connected and self.ws:
+                try:
+                    with self._lock:
+                        if self.ws:
+                            self.ws.ping()
+                except Exception as e:
+                    print(f"[Robot] Keep-alive ping failed ({e}). Reconnecting in background...")
+                    self._handle_disconnect()
+            elif not self.connected and self.auto_reconnect:
+                # Attempt silent reconnection in background
+                self._connect(silent=True)
 
     def send(self, cmd):
         """Sends a raw text command to the ESP32 Body controller."""
         if not self.connected or not self.ws:
             return
         try:
-            self.ws.send(cmd)
+            with self._lock:
+                if self.connected and self.ws:
+                    self.ws.send(cmd)
         except Exception as e:
             print(f"[Robot] Send error: {e}")
-            self.connected = False
+            self._handle_disconnect()
 
     # Movement Commands
     def forward(self, duration=0):
@@ -100,11 +140,9 @@ class RobotController:
 
     def dance(self):
         self.send("DANCE")
-        self.sonic.play_emotion("excited", 0.9)
 
     def sing(self):
         self.send("SING")
-        self.sonic.play_emotion("happy", 0.8)
 
     # Display & Speech Commands
     def display(self, text):
@@ -118,39 +156,46 @@ class RobotController:
         self.send("DISPLAY_CLOSE")
         time.sleep(BOX_ANIM_DURATION_S)
 
-    def speak_segments(self, segments):
+    def play_audio(self, url):
+        """Tells ESP32 to stream and play a WAV audio URL over I2S."""
+        self.send(f"SPEAK_URL:{url}")
+
+    def stop_audio(self):
+        """Stops active audio playback on ESP32."""
+        self.send("STOP_AUDIO")
+
+    def speak_segments(self, segments, audio_service=None):
         """
-        Coordinates full speech response:
+        Coordinates speech response:
+        - Synthesizes and streams natural voice audio over I2S (via AudioService).
         - Animates eye expressions on ESP32 Body OLED.
         - Scrolls text response across OLED speech box.
-        - Simultaneously plays speech-paced R2-D2 droid vocalizations on the ESP32-CAM Head Speaker!
         """
         if not segments:
             return
 
+        # 1. Trigger natural voice synthesis & playback over I2S if available
+        svc = audio_service or getattr(self, "audio_service", None)
+        if svc:
+            full_text = " ".join(txt for _, txt in segments if txt).strip()
+            if full_text:
+                audio_url = svc.synthesize(full_text)
+                if audio_url:
+                    self.play_audio(audio_url)
+
+        # 2. Display text and animate emotions on OLED
         self.display_open()
         for emotion, text in segments:
-            # 1. Update eye animation on OLED
+            # Update eye animation on OLED
             self.set_emotion(emotion)
 
             if text:
-                # 2. Trigger R2-D2 Droid Vocalization on ESP32-CAM Head Speaker
-                self.sonic.play_sentence(text, emotion_override=emotion)
-
-                # 3. Display text and wait for scroll completion
+                # Display text and wait for scroll completion
                 self.display(text)
                 wait_time = calculate_speech_scroll_time(text)
                 time.sleep(wait_time)
 
         self.display_close()
-
-    def speak_droid(self, text, emotion=None):
-        """Helper to speak any sentence directly in R2-D2 droid vocalizations."""
-        self.sonic.play_sentence(text, emotion_override=emotion)
-
-    def play_sound(self, emotion, intensity=0.5):
-        """Helper to play a canned emotion sound signature."""
-        self.sonic.play_emotion(emotion, intensity=intensity)
 
     # Emotions
     def set_emotion(self, emotion):
@@ -180,10 +225,7 @@ class RobotController:
     def awe(self): self.send("AWE")
 
     def close(self):
-        if self.ws:
-            try:
-                self.ws.close()
-            except Exception:
-                pass
-            self.connected = False
-            print("[Robot] Connection closed.")
+        self._running = False
+        self.auto_reconnect = False
+        self._handle_disconnect()
+        print("[Robot] Connection closed.")

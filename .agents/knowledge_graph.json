@@ -5,6 +5,10 @@
     "software": {
       "path": "software/ikru/",
       "packages": {
+        "audio": {
+          "__init__.py": "Exposes AudioService.",
+          "service.py": "AudioService class managing edge-tts natural speech synthesis, 44.1kHz 16-bit stereo WAV resampling, and local background HTTP streaming on port 8000."
+        },
         "chat": {
           "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying.",
           "prompts.py": "System prompt, identity, emotion rules, and movement tool instructions.",
@@ -15,38 +19,54 @@
           "frame_buffer.py": "Thread-safe latest-frame buffer with zero queue buildup.",
           "vlm.py": "VLMClient for on-demand visual reasoning with Qwen3-VL/LLaVA."
         },
-        "audio": {
-          "__init__.py": "Exposes SonicEmotionEngine, SonicClient, and DroidStep.",
-          "engine.py": "SonicEmotionEngine for R2-D2 Astromech prosody/WAV synthesis and SonicClient for TCP communication with ESP32-CAM Head Unit (192.168.4.1:5000)."
+        "mic": {
+          "__init__.py": "Exposes MicController.",
+          "controller.py": "MicController class handling PyAudio/SpeechRecognition initialization, ambient noise calibration, and Google Speech-to-Text."
         },
         "robot": {
-          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81, motor/OLED commands, and integrated SonicClient for synchronized R2-D2 droid vocalizations.",
+          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 with keep-alive pings, background auto-reconnect, motor movements, OLED eye/speech box animations, and I2S audio playback (SPEAK_URL / STOP_AUDIO).",
           "protocol.py": "Command strings, constants, and scroll timing calculations for OLED speech box."
         },
-        "main.py": "Main CLI loop integrating ChatEngine, RobotController (with SonicClient), and VisionReceiver."
+        "main.py": "Main CLI loop integrating ChatEngine, RobotController, VisionReceiver, MicController, and AudioService."
       }
     },
     "firmware": {
       "controller": {
         "path": "firmware/controller/controller.ino",
-        "purpose": "ESP32 Body & OLED firmware managing WebSocket server, DRV8833 dual motors, and speech scrolling."
+        "purpose": "ESP32 Body & OLED firmware managing WebSocket server (port 81), MAX98357A I2S natural voice streaming on Core 0, DRV8833 dual motors (remapped to GPIO 18/19), and speech scrolling/eye animations.",
+        "target_board": "ESP32 Dev Module (esp32:esp32:esp32)",
+        "upload_port": "COM7",
+        "toolchain": "arduino-cli",
+        "dependencies": [
+          "Face.h",
+          "WebSocketsServer.h",
+          "WiFi.h",
+          "Wire.h",
+          "U8g2",
+          "ESP_I2S.h",
+          "HTTPClient.h"
+        ]
       },
       "head": {
         "path": "firmware/head/head.ino",
-        "purpose": "ESP32-CAM Head Unit ('IKRU-CAM' / 192.168.4.1) firmware streaming UDP video on port 2222 with discovery on port 2223, and driving SmartElex speaker R2-D2 glissando sweeps on GPIO 2 via TCP on port 5000."
+        "purpose": "ESP32-CAM Head Unit ('IKRU-CAM' / 192.168.4.1) firmware streaming UDP video on port 2222 with discovery on port 2223 and configurable OV2640 orientation controls (CAMERA_VFLIP/CAMERA_HMIRROR)."
       }
     },
     "tests": {
+      "audio": {
+        "esp32_test_receiver.ino": "Standalone ESP32 I2S WAV streaming firmware (MAX98357A on GPIO 25/26/27, 44.1kHz stereo 16-bit).",
+        "test_audio_server.py": "Local HTTP audio server (port 8000) with edge-tts speech synthesis and 44.1kHz stereo WAV resampling."
+      },
       "vision": {
         "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
       },
-      "audio": {
-        "test_sonic_emotion.py": "Automated unit tests covering all 18+ R2-D2 droid vocalizations, glissando sweeps, intensity levels, intent blending, sentence prosody, and ESP32 command serialization.",
-        "interactive_test.py": "Interactive CLI test harness supporting arbitrary natural sentence replication into R2-D2 vocalizations, word-length driven durations, ASCII sweep ladders, PC audio preview, and direct WebSocket transmission to ESP32 AP (ws://192.168.4.1:81)."
+      "mic": {
+        "test_mic_stt.py": "Microphone enumeration, PyAudio hardware test, and Google Web Speech API speech-to-text trial."
       },
-      "test_integrated_audio.py": "Integration test for SonicClient and RobotController.",
-      "test_robot.py": "WebSocket command tester script.",
-      "test_socket.py": "TCP port 81 reachability tester script."
+      "robot": {
+        "test_robot.py": "WebSocket command tester script.",
+        "test_socket.py": "TCP port 81 reachability tester script."
+      }
     }
   }
 }

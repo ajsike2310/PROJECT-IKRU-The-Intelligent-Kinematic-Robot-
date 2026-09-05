@@ -10,14 +10,16 @@ if parent_dir not in sys.path:
 from ikru.chat import ChatEngine
 from ikru.robot import RobotController
 from ikru.vision import VisionReceiver, VLMClient
+from ikru.audio import AudioService
 
 # Configuration (Standalone AP Mode — Everything via IKRU-CAM)
 ROBOT_IP = "192.168.4.2"    # Body & OLED Controller connected to IKRU-CAM AP
-CAM_IP = "192.168.4.1"      # Head Unit (Camera + Speaker AP Gateway)
+CAM_IP = "192.168.4.1"      # Head Unit (Camera AP Gateway)
 ENABLE_VISION = True       # Set to True when connected to IKRU-CAM
 ENABLE_MIC = True          # Use microphone for voice commands instead of text input
+ENABLE_AUDIO = True        # Stream natural TTS voice over I2S to ESP32 MAX98357A
 
-LLM_MODEL = "qwen2.5:7b"
+LLM_MODEL = "qwen2.5:3b"
 VLM_MODEL = "qwen3-vl:4b"
 
 VISUAL_KEYWORDS = [
@@ -35,11 +37,9 @@ def main():
     print("=" * 50)
 
     # Initialize Subsystems
-    robot = RobotController(ip=ROBOT_IP, audio_ip=CAM_IP, enable_local_audio=True, volume=0.20)
+    robot = RobotController(ip=ROBOT_IP)
     chat = ChatEngine(model=LLM_MODEL)
-
-    # Play startup greeting chime
-    robot.play_sound("happy", 0.7)
+    audio_service = AudioService() if ENABLE_AUDIO else None
 
     # Initialize Microphone if enabled
     use_mic = ENABLE_MIC
@@ -92,9 +92,8 @@ def main():
             if user_input.lower().strip() == "exit":
                 break
 
-            # Indicate thinking state on OLED & audio
+            # Indicate thinking state on OLED
             robot.focused()
-            robot.play_sound("thinking", 0.5)
             print("  [Thinking...]")
 
             # Optional visual reasoning
@@ -110,8 +109,8 @@ def main():
             # Query Chat LLM
             tools, response_text, segments = chat.ask(user_input, visual_context=visual_context)
 
-            # Display speech and animate face on OLED
-            robot.speak_segments(segments)
+            # Display speech, stream natural voice, and animate face on OLED
+            robot.speak_segments(segments, audio_service=audio_service)
 
             # Execute movement actions
             for t in tools:
@@ -143,8 +142,8 @@ def main():
         print("\n[IKRU] Exiting...")
     finally:
         print("\n[IKRU] Shutting down...")
-        robot.play_sound("sad", 0.7)
-        time.sleep(1.0)  # Wait for the sound to play before closing connection
+        if audio_service:
+            audio_service.stop()
         if vision:
             vision.stop()
         robot.close()
