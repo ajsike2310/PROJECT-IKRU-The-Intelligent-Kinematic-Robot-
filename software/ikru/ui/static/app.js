@@ -644,7 +644,66 @@ function toggleMute() {
 // ============================================================
 // 10. WI-FI & NETWORK PROVISIONING
 // ============================================================
+
+async function refreshNetworkInfo() {
+  const btn = document.getElementById("btnRefreshNet");
+  if (btn) { btn.disabled = true; btn.querySelector("span").textContent = "LOADING..."; }
+
+  try {
+    const res = await fetch(`/api/network/info?ip=${encodeURIComponent(currentRobotIp)}&cam=${encodeURIComponent(currentCamIp)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+
+    // SSID + signal
+    const ssidEl   = document.getElementById("netSsid");
+    const sigEl    = document.getElementById("netSignal");
+    const srvEl    = document.getElementById("netServerIp");
+    const gwEl     = document.getElementById("netGateway");
+    const rIpEl    = document.getElementById("netRobotIp");
+    const cIpEl    = document.getElementById("netCamIp");
+    const rDot     = document.getElementById("netRobotDot");
+    const cDot     = document.getElementById("netCamDot");
+    const badge    = document.getElementById("wifiStatusBadge");
+
+    if (ssidEl)  ssidEl.textContent  = d.wifi_ssid  || "—";
+    if (sigEl)   sigEl.textContent   = d.wifi_signal || "—";
+    if (srvEl)   srvEl.textContent   = d.server_ip  || "—";
+    if (gwEl)    gwEl.textContent    = d.gateway    || "—";
+    if (rIpEl)   rIpEl.textContent   = d.robot_ip   || currentRobotIp;
+    if (cIpEl)   cIpEl.textContent   = d.cam_ip     || currentCamIp;
+
+    // Reachability dots
+    if (rDot) { rDot.className = "net-reach-dot " + (d.robot_online ? "online" : "offline"); }
+    if (cDot) { cDot.className = "net-reach-dot " + (d.cam_online   ? "online" : "offline"); }
+
+    // Signal color
+    if (sigEl) {
+      const sig = parseInt(d.wifi_signal);
+      sigEl.style.color = sig >= 70 ? "#22c55e" : sig >= 40 ? "#f59e0b" : "#ef4444";
+    }
+
+    // Badge
+    if (badge) {
+      badge.textContent  = d.wifi_connected ? "CONNECTED" : "DISCONNECTED";
+      badge.className    = "card-status-badge " + (d.wifi_connected ? "active" : "offline");
+    }
+
+    // Auto-fill SSID input if empty
+    const ssidInput = document.getElementById("wifiSsidInput");
+    if (ssidInput && !ssidInput.value && d.wifi_ssid && d.wifi_ssid !== "unknown") {
+      ssidInput.value = d.wifi_ssid;
+    }
+
+    appendLog(`[NET] Server: ${d.server_ip} | SSID: ${d.wifi_ssid} | Signal: ${d.wifi_signal} | Robot: ${d.robot_online ? "ONLINE" : "OFFLINE"}`, "sys");
+  } catch (err) {
+    appendLog(`[NET ERR] ${err.message}`, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.querySelector("span").textContent = "REFRESH"; }
+  }
+}
+
 async function scanWiFiNetworks() {
+
   const badge = document.getElementById("wifiStatusBadge");
   badge.textContent = "SCANNING...";
   appendLog("[WIFI] Scanning nearby Wi-Fi SSIDs...", "sys");
@@ -1043,6 +1102,9 @@ window.addEventListener("DOMContentLoaded", () => {
   fetchVoiceProfiles();
   initCameraFeed();
   updateCameraStatus();
+  // Auto-fetch real network info on load, then every 30s
+  setTimeout(refreshNetworkInfo, 1800);   // after boot animation settles
   setInterval(fetchStatus, 3000);
   setInterval(updateCameraStatus, 3000);
+  setInterval(refreshNetworkInfo, 30000); // keep network panel live
 });

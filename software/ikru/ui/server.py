@@ -214,6 +214,63 @@ def scan_wifi_ssids() -> list:
     return networks
 
 
+def get_network_info(robot_ip: str = DEFAULT_ROBOT_IP, cam_ip: str = DEFAULT_CAM_IP) -> dict:
+    """Returns real server IP, WiFi SSID, signal, robot reachability, and cam status."""
+    info = {
+        "server_ip": "unknown",
+        "wifi_ssid": "unknown",
+        "wifi_signal": "--",
+        "wifi_connected": False,
+        "robot_ip": robot_ip,
+        "robot_online": False,
+        "cam_ip": cam_ip,
+        "cam_online": False,
+        "gateway": "unknown",
+    }
+
+    # ── Server local IP ─────────────────────────────────────────
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        info["server_ip"] = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
+    # ── Active WiFi SSID + Signal (Windows netsh) ────────────────
+    try:
+        out = subprocess.check_output(
+            ["netsh", "wlan", "show", "interfaces"],
+            text=True, timeout=4, errors="replace"
+        )
+        ssid_match = re.search(r"^\s+SSID\s+:\s+(.+)$", out, re.MULTILINE)
+        sig_match  = re.search(r"^\s+Signal\s+:\s+(\d+)%", out, re.MULTILINE)
+        state_match = re.search(r"^\s+State\s+:\s+(\S+)", out, re.MULTILINE)
+        if ssid_match:
+            info["wifi_ssid"] = ssid_match.group(1).strip()
+        if sig_match:
+            info["wifi_signal"] = sig_match.group(1).strip() + "%"
+        if state_match:
+            info["wifi_connected"] = state_match.group(1).lower() == "connected"
+    except Exception:
+        pass
+
+    # ── Default gateway ──────────────────────────────────────────
+    try:
+        out = subprocess.check_output(["ipconfig"], text=True, timeout=4, errors="replace")
+        gw_match = re.search(r"Default Gateway[^\d]*(\d+\.\d+\.\d+\.\d+)", out)
+        if gw_match:
+            info["gateway"] = gw_match.group(1)
+    except Exception:
+        pass
+
+    # ── Robot / Camera reachability ──────────────────────────────
+    info["robot_online"] = check_tcp_port(robot_ip, 81, timeout=0.4)
+    info["cam_online"]   = check_tcp_port(cam_ip, 80, timeout=0.4) or check_tcp_port(cam_ip, 81, timeout=0.4)
+
+    return info
+
+
 def send_wifi_serial(ssid: str, password: str) -> dict:
     """Provisions Wi-Fi credentials over USB Serial (COM port)."""
     try:
@@ -293,6 +350,15 @@ class IkruApiHandler(http.server.SimpleHTTPRequestHandler):
             networks = scan_wifi_ssids()
             self._send_json({"success": True, "networks": networks})
             return
+
+        elif path == "/api/network/info":
+            query = urllib.parse.parse_qs(parsed.query)
+            robot_ip = query.get("ip", [DEFAULT_ROBOT_IP])[0]
+            cam_ip   = query.get("cam", [DEFAULT_CAM_IP])[0]
+            net = get_network_info(robot_ip=robot_ip, cam_ip=cam_ip)
+            self._send_json(net)
+            return
+
 
         elif path == "/api/voice/list":
             svc = get_audio_service()

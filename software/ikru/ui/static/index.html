@@ -239,6 +239,40 @@
             <div class="card-status-badge active" id="wifiStatusBadge">READY</div>
           </div>
 
+          <!-- Live Network Info Panel -->
+          <div class="net-info-panel" id="netInfoPanel">
+            <div class="net-info-row">
+              <span class="net-info-label">PC SSID</span>
+              <span class="net-info-val" id="netSsid">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">SIGNAL</span>
+              <span class="net-info-val signal-val" id="netSignal">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">SERVER IP</span>
+              <span class="net-info-val mono" id="netServerIp">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">GATEWAY</span>
+              <span class="net-info-val mono" id="netGateway">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">ROBOT IP</span>
+              <span class="net-info-val mono" id="netRobotIp">—</span>
+              <span class="net-reach-dot" id="netRobotDot" title="Robot reachability"></span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">CAM IP</span>
+              <span class="net-info-val mono" id="netCamIp">—</span>
+              <span class="net-reach-dot" id="netCamDot" title="Camera reachability"></span>
+            </div>
+            <button class="btn-text-action" style="margin-top:6px;" onclick="refreshNetworkInfo()" id="btnRefreshNet">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>REFRESH</span>
+            </button>
+          </div>
+
           <div class="wifi-card-body">
             <div class="wifi-input-group">
               <div class="input-label-row">
@@ -249,10 +283,8 @@
                 </button>
               </div>
               <div class="input-select-wrapper">
-                <input type="text" id="wifiSsidInput" list="wifiNetworkList" placeholder="Select or type Wi-Fi SSID..." value="GNXS-2.4G-C457E1">
+                <input type="text" id="wifiSsidInput" list="wifiNetworkList" placeholder="Select or type Wi-Fi SSID..." value="">
                 <datalist id="wifiNetworkList">
-                  <option value="GNXS-2.4G-C457E1">
-                  <option value="IKRU-CAM">
                 </datalist>
               </div>
             </div>
@@ -260,7 +292,7 @@
             <div class="wifi-input-group">
               <label for="wifiPassInput">Wi-Fi Password:</label>
               <div class="pass-wrapper">
-                <input type="password" id="wifiPassInput" placeholder="Enter Wi-Fi password..." value="1234567890">
+                <input type="password" id="wifiPassInput" placeholder="Enter Wi-Fi password...">
                 <button class="btn-toggle-pass" onclick="togglePassVisibility()" title="Show/Hide Password" type="button">👁</button>
               </div>
             </div>
@@ -277,6 +309,7 @@
             </button>
           </div>
         </div>
+
 
       </section>
 

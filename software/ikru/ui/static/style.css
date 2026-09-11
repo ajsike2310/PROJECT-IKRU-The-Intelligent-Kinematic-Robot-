@@ -1580,6 +1580,65 @@ body.boot-complete .app-shell {
   flex-direction: column;
 }
 
+/* ── Live Network Info Panel ──────────────────────────── */
+.net-info-panel {
+  background: var(--surface-alt, #f5f5f5);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.net-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.net-info-label {
+  color: var(--text-muted, #888);
+  font-weight: 600;
+  width: 72px;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+
+.net-info-val {
+  color: var(--text-primary, #111);
+  font-weight: 500;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.net-info-val.mono {
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+}
+
+.signal-val {
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.net-reach-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d1d5db;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.net-reach-dot.online  { background: #22c55e; box-shadow: 0 0 4px #22c55e88; }
+.net-reach-dot.offline { background: #ef4444; }
+
 .wifi-card-body {
   display: flex;
   flex-direction: column;
