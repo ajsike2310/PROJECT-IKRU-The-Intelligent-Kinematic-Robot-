@@ -11,20 +11,29 @@ OLED_EMOTIONS = [
 EMOTION_REGEX = re.compile(r'\[(' + '|'.join(OLED_EMOTIONS) + r')\]', re.IGNORECASE)
 
 
+VOCAL_TO_OLED = [
+    (re.compile(r'\[(?:laugh|laughter|cackle|haha+)\]', re.IGNORECASE), 'glee'),
+    (re.compile(r'\[(?:giggle|chuckle|snicker)\]', re.IGNORECASE), 'happy'),
+    (re.compile(r'\[(?:cry|crying|sob|weep)\]', re.IGNORECASE), 'sad'),
+    (re.compile(r'\[(?:sigh|sighs)\]', re.IGNORECASE), 'worried'),
+    (re.compile(r'\[(?:gasp|gasps|shocked)\]', re.IGNORECASE), 'surprised'),
+    (re.compile(r'\[(?:groan|groans)\]', re.IGNORECASE), 'frustrated'),
+    (re.compile(r'\[(?:clear[\s_]?throat|clear)\]', re.IGNORECASE), 'focused'),
+    (re.compile(r'\[(?:whisper)\]', re.IGNORECASE), 'suspicious'),
+    (re.compile(r'\[(?:cough)\]', re.IGNORECASE), 'annoyed'),
+]
+
+
 def parse_segments(text):
     """
     Splits a response string containing inline OLED [emotion] tags into
     a list of (emotion, text) tuples for facial expression rendering.
-    Preserves Chatterbox paralinguistic voice tags ([chuckle], [laugh], [sigh],
-    [gasp], [clear throat]) inside the text content for the speech synthesizer.
+    Preserves Chatterbox paralinguistic voice tags ([giggle], [laughter], [sigh],
+    [gasp], [clear_throat], [cry]) inside the text content for the speech synthesizer.
 
-    Example input:
-      "[happy]Hi there [chuckle]! [focused]Let me compute that... [glee]Done!"
-
-    Example output:
-      [("happy", "Hi there [chuckle]!"),
-       ("focused", "Let me compute that..."),
-       ("glee", "Done!")]
+    If no explicit OLED tag was provided, automatically infers the facial expression
+    from vocal sounds (e.g. [laugh] -> glee, [clear_throat] -> focused) or sentiment,
+    ensuring the robot face is always expressive and emotions are never skipped.
     """
     if not text or not text.strip():
         return []
@@ -32,7 +41,7 @@ def parse_segments(text):
     parts = EMOTION_REGEX.split(text)
     segments = []
 
-    # Handle text preceding the first emotion tag
+    # Handle text preceding the first explicit OLED emotion tag
     if parts[0].strip():
         segments.append(("normal", parts[0].strip()))
 
@@ -42,13 +51,41 @@ def parse_segments(text):
         if chunk:
             segments.append((emotion, chunk))
 
-    return segments
+    if not segments and text.strip():
+        segments.append(("normal", text.strip()))
+
+    # Refine segments: if emotion is 'normal', infer from vocal tags or sentiment
+    refined = []
+    for emotion, chunk in segments:
+        if emotion == "normal":
+            for pattern, inferred_emo in VOCAL_TO_OLED:
+                if pattern.search(chunk):
+                    emotion = inferred_emo
+                    break
+
+            if emotion == "normal":
+                lower = chunk.lower()
+                if any(w in lower for w in ["haha", "funny", "hilarious", "glad", "great", "awesome", "welcome", "hello", "hi"]):
+                    emotion = "happy"
+                elif any(w in lower for w in ["sorry", "unfortunately", "sad", "hurts", "bad", "crying"]):
+                    emotion = "sad"
+                elif any(w in lower for w in ["looking", "scanning", "checking", "see", "ready", "detect", "computing"]):
+                    emotion = "focused"
+                elif any(w in lower for w in ["angry", "mad", "grr", "furious"]):
+                    emotion = "angry"
+                else:
+                    emotion = "happy"
+
+        refined.append((emotion, chunk))
+
+    return refined
 
 
 def parse_llm_json(raw_text):
     """
     Safely parses JSON responses from the local LLM.
     Handles tool calls and response text with automatic fallback for malformed JSON.
+    Also recovers top-level 'emotion' fields if the LLM placed the tag outside response.
     """
     raw_text = raw_text.strip()
 
@@ -71,6 +108,12 @@ def parse_llm_json(raw_text):
             tools.append({"action": tool, "duration": 0})
 
         response_text = data.get("response", "").strip()
+
+        # If LLM put 'emotion' as a separate JSON field, inject it into response_text
+        outer_emotion = data.get("emotion", "")
+        if outer_emotion and isinstance(outer_emotion, str) and not response_text.startswith("["):
+            response_text = f"[{outer_emotion.strip().lower()}] {response_text}"
+
         return tools, response_text
 
     except json.JSONDecodeError:

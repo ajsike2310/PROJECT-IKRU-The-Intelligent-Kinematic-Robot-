@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PROJECT IKRU — Companion Studio & Control Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="glow-bg"></div>
+
+  <!-- Header -->
+  <header class="studio-header">
+    <div class="logo-group">
+      <div class="robot-avatar">
+        <span class="eye left-eye"></span>
+        <span class="eye right-eye"></span>
+      </div>
+      <div>
+        <h1>PROJECT IKRU</h1>
+        <p class="subtitle">Companion Studio & Control Hub</p>
+      </div>
+    </div>
+    <div class="header-status-pill" id="globalStatusPill">
+      <span class="status-dot offline" id="globalStatusDot"></span>
+      <span id="globalStatusText">Connecting...</span>
+    </div>
+  </header>
+
+  <main class="dashboard-container">
+    <!-- Network & Environment Preset Bar -->
+    <section class="network-bar card">
+      <div class="network-header-row">
+        <div class="network-presets">
+          <button class="preset-btn active" id="btnModeWifi" onclick="setMode('wifi')">
+            <span class="icon">🏠</span> Wi-Fi Network Mode
+          </button>
+          <button class="preset-btn" id="btnModeAP" onclick="setMode('ap')">
+            <span class="icon">🚀</span> Portable AP (IKRU-CAM)
+          </button>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btnToggleWifiPanel" onclick="toggleWifiPanel()">
+          📶 Wi-Fi Provisioning & Credentials ▼
+        </button>
+      </div>
+
+      <div class="network-inputs">
+        <div class="input-field">
+          <label for="inputRobotIp">Robot Body IP:</label>
+          <div class="input-with-button">
+            <input type="text" id="inputRobotIp" value="192.168.1.42" placeholder="192.168.1.42">
+            <button class="btn btn-secondary" id="btnScan" onclick="scanNetwork()">
+              <span id="scanBtnText">🔍 Auto-Scan</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="input-field">
+          <label for="inputCamIp">Camera Head IP:</label>
+          <input type="text" id="inputCamIp" value="192.168.4.1" placeholder="192.168.4.1">
+        </div>
+      </div>
+
+      <!-- Wi-Fi Provisioning Panel -->
+      <div class="wifi-provision-panel" id="wifiProvisionPanel">
+        <div class="wifi-panel-header">
+          <h3>📶 Configure Robot Wi-Fi (Home, Friend's House, or Mobile Hotspot)</h3>
+          <span class="badge" id="badgeCurrentFirmwareSsid">Firmware Default: Loading...</span>
+        </div>
+        
+        <div class="wifi-inputs-grid">
+          <div class="input-field">
+            <label for="inputWifiSsid">Network SSID (Name):</label>
+            <input type="text" id="inputWifiSsid" placeholder="e.g. FriendsHomeWiFi or Hotspot">
+          </div>
+          <div class="input-field">
+            <label for="inputWifiPass">Network Password:</label>
+            <div class="input-with-button">
+              <input type="password" id="inputWifiPass" placeholder="Enter Wi-Fi Password">
+              <button class="btn btn-secondary" type="button" onclick="togglePasswordVisibility('inputWifiPass')" title="Toggle Show/Hide">👁️</button>
+            </div>
+          </div>
+          <div class="input-field">
+            <label for="selectComPort">USB Serial COM Port:</label>
+            <div class="input-with-button">
+              <select id="selectComPort">
+                <option value="">Scanning COM ports...</option>
+              </select>
+              <button class="btn btn-secondary" type="button" onclick="fetchComPorts()" title="Refresh Ports">🔄</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="wifi-action-buttons">
+          <button class="btn btn-primary" onclick="pushWifiActive()" title="Sends Wi-Fi credentials to the currently connected robot via WebSocket">
+            🚀 Push via Active Robot (Wi-Fi)
+          </button>
+          <button class="btn btn-secondary" onclick="pushWifiSerial()" title="Directly writes credentials to robot over USB Serial">
+            ⚡ Push via USB Serial (COM Port)
+          </button>
+          <button class="btn btn-secondary" onclick="saveFirmwareWifi()" title="Updates the default Wi-Fi in controller.ino so re-flashing always uses it">
+            💾 Update Firmware Default (controller.ino)
+          </button>
+        </div>
+
+        <div class="wifi-hint-box">
+          <span class="hint-icon">ℹ️</span>
+          <span><strong>Quick Tip:</strong> When moving to a friend's house, enter their Wi-Fi SSID and Password here and click <strong>Push via Active Robot</strong> (if robot is currently on your hotspot/network) or plug in via USB and click <strong>Push via USB Serial</strong> (make sure Arduino Serial Monitor is closed first). You can also click <strong>Update Firmware Default</strong> to permanently save it in the Arduino sketch!</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main 3-Column Grid -->
+    <div class="dashboard-grid">
+      <!-- Col 1: System Health Checklist -->
+      <section class="card health-card">
+        <div class="card-header">
+          <h2>Pre-Flight Diagnostics</h2>
+          <span class="badge" id="refreshTimer">Auto 3s</span>
+        </div>
+
+        <div class="diagnostic-list">
+          <div class="diag-item" id="diagOllama">
+            <div class="diag-info">
+              <span class="diag-title">Local LLM (Ollama)</span>
+              <span class="diag-sub" id="ollamaDetails">Checking...</span>
+            </div>
+            <span class="status-pill pending" id="pillOllama">Pending</span>
+          </div>
+
+          <div class="diag-item" id="diagRobot">
+            <div class="diag-info">
+              <span class="diag-title">ESP32 Body & OLED</span>
+              <span class="diag-sub" id="robotDetails">ws://192.168.1.34:81</span>
+            </div>
+            <span class="status-pill pending" id="pillRobot">Pending</span>
+          </div>
+
+          <div class="diag-item" id="diagAudio">
+            <div class="diag-info">
+              <span class="diag-title">Audio Streaming Server</span>
+              <span class="diag-sub" id="audioDetails">Port 8000 (Ready)</span>
+            </div>
+            <span class="status-pill online" id="pillAudio">Ready</span>
+          </div>
+
+          <div class="diag-item" id="diagCam">
+            <div class="diag-info">
+              <span class="diag-title">ESP32-CAM Head Unit</span>
+              <span class="diag-sub" id="camDetails">UDP 2222 / Discovery 2223</span>
+            </div>
+            <span class="status-pill pending" id="pillCam">Pending</span>
+          </div>
+        </div>
+
+        <!-- Quick Help Alert -->
+        <div class="info-alert" id="firewallHint">
+          <span class="alert-icon">💡</span>
+          <span>If visiting a friend, ensure Windows Wi-Fi is set to <strong>Private Network</strong> so the robot speaker can fetch speech!</span>
+        </div>
+      </section>
+
+      <!-- Col 2: Interactive Robot Sandbox -->
+      <section class="card sandbox-card">
+        <div class="card-header">
+          <h2>Interactive Robot Sandbox</h2>
+          <span class="badge badge-accent">Live Controls</span>
+        </div>
+
+        <!-- OLED Eyes Tester -->
+        <div class="sandbox-section">
+          <h3>OLED Eye Expressions</h3>
+          <div class="button-grid">
+            <button class="btn btn-emotion" onclick="testEmotion('HAPPY')">😊 Happy</button>
+            <button class="btn btn-emotion" onclick="testEmotion('GLEE')">✨ Glee</button>
+            <button class="btn btn-emotion" onclick="testEmotion('FOCUSED')">🎯 Focused</button>
+            <button class="btn btn-emotion" onclick="testEmotion('SURPRISED')">😲 Surprised</button>
+            <button class="btn btn-emotion" onclick="testEmotion('SAD')">🥺 Sad</button>
+            <button class="btn btn-emotion" onclick="testEmotion('NORMAL')">😐 Normal</button>
+          </div>
+        </div>
+
+        <!-- Motor Controls -->
+        <div class="sandbox-section">
+          <h3>DRV8833 Motors (0.5s Nudge)</h3>
+          <div class="dpad-container">
+            <div class="dpad-row">
+              <button class="btn btn-move" onclick="testMove('FORWARD')">▲</button>
+            </div>
+            <div class="dpad-row">
+              <button class="btn btn-move" onclick="testMove('LEFT')">◀</button>
+              <button class="btn btn-move btn-danger" onclick="testMove('STOP')">■</button>
+              <button class="btn btn-move" onclick="testMove('RIGHT')">▶</button>
+            </div>
+            <div class="dpad-row">
+              <button class="btn btn-move" onclick="testMove('BACKWARD')">▼</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Speech Synthesis Tester -->
+        <div class="sandbox-section">
+          <h3>Voice & Speaker Test</h3>
+          <div class="speech-controls">
+            <select id="selectVoice">
+              <option value="guy">US Male (Guy - Natural)</option>
+              <option value="jenny">US Female (Jenny - Warm)</option>
+              <option value="ana">US Playful (Ana - Animated)</option>
+              <option value="ryan">British (Ryan)</option>
+              <option value="prabhat">Indian (Prabhat)</option>
+            </select>
+            <input type="text" id="inputSpeakText" value="Hello! I am Ikru, your desk companion. Systems operational!" placeholder="Enter test speech...">
+            <div class="speech-action-row">
+              <label class="toggle-label">
+                <input type="checkbox" id="checkTestPcAudio" checked> Play on PC also
+              </label>
+              <button class="btn btn-primary" onclick="testSpeech()">🔊 Test Voice</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Col 3: Assistant Launcher & Live Console -->
+      <section class="card launcher-card">
+        <div class="card-header">
+          <h2>Assistant Launcher</h2>
+          <span class="status-pill offline" id="pillAssistant">Stopped</span>
+        </div>
+
+        <!-- Launch Options -->
+        <div class="launcher-options">
+          <label class="toggle-label">
+            <input type="checkbox" id="checkLaunchPcAudio"> PC Speaker Audio also
+          </label>
+          <label class="toggle-label">
+            <input type="checkbox" id="checkLaunchNoMic"> Typing Only (Disable Mic)
+          </label>
+          <label class="toggle-label">
+            <input type="checkbox" id="checkLaunchNoVision"> Headless (Disable Vision)
+          </label>
+        </div>
+
+        <!-- Big Launch Button -->
+        <div class="launch-action">
+          <button class="btn btn-launch" id="btnLaunch" onclick="toggleAssistant()">
+            <span id="launchBtnIcon">🚀</span>
+            <span id="launchBtnText">Start AI Assistant</span>
+          </button>
+        </div>
+
+        <!-- Live Terminal Stream -->
+        <div class="terminal-container">
+          <div class="terminal-header">
+            <span>Terminal Output</span>
+            <button class="btn-clear" onclick="clearLogs()">Clear</button>
+          </div>
+          <div class="terminal-body" id="terminalOutput">
+            <div class="log-line text-dim">[Studio Ready] Select options and click 'Start AI Assistant' to begin.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

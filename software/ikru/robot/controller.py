@@ -12,7 +12,7 @@ class RobotController:
 
     def __init__(
         self,
-        ip="192.168.1.37",
+        ip="192.168.1.34",
         port=81,
         auto_reconnect=True,
         ping_interval=5,
@@ -37,7 +37,7 @@ class RobotController:
 
     def _connect(self, silent=False):
         candidates = [self.ip] if self.ip else []
-        for candidate in ["192.168.4.2", "192.168.4.3", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
+        for candidate in ["192.168.1.42", "192.168.1.34", "192.168.4.2", "192.168.4.3", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
             if candidate not in candidates:
                 candidates.append(candidate)
 
@@ -158,13 +158,14 @@ class RobotController:
 
     def play_audio(self, url):
         """Tells ESP32 to stream and play a WAV audio URL over I2S."""
+        print(f"[Robot] Dispatched SPEAK_URL to ESP32: {url}")
         self.send(f"SPEAK_URL:{url}")
 
     def stop_audio(self):
         """Stops active audio playback on ESP32."""
         self.send("STOP_AUDIO")
 
-    def speak_segments(self, segments, audio_service=None):
+    def speak_segments(self, segments, audio_service=None, play_pc=None, stream_robot=True):
         """
         Coordinates speech response:
         - Synthesizes and streams natural voice audio over I2S (via AudioService).
@@ -181,25 +182,28 @@ class RobotController:
         duration = 0.0
 
         if svc and full_text:
-            audio_url = svc.synthesize(full_text)
+            print(f"[Robot] Synthesizing speech: \"{full_text}\" (play_pc={play_pc})...")
+            audio_url = svc.synthesize(full_text, play_pc=play_pc)
             duration = getattr(svc, "last_duration", 0.0)
+            print(f"[Robot] Speech ready ({duration:.2f}s): {audio_url}")
 
-        # Start streaming natural voice via I2S
-        if audio_url:
+        # Start streaming natural voice via I2S to ESP32 speaker
+        if stream_robot and audio_url:
             self.play_audio(audio_url)
 
-        # Distribute playback duration across emotion segments
+        # Distribute playback duration across emotion segments with buffering
         total_len = max(1, sum(len(txt.strip()) for _, txt in segments if txt))
-        if duration <= 0:
-            duration = max(2.0, len(full_text) * 0.06)
+        effective_duration = max(duration, len(full_text) * 0.08)
 
         for emotion, text in segments:
-            self.set_emotion(emotion)
             seg_len = len(text.strip()) if text else 1
-            seg_time = max(0.8, (seg_len / total_len) * duration)
+            seg_time = max(1.2, (seg_len / total_len) * effective_duration)
+            print(f"[Robot] Displaying OLED Expression: [{emotion.upper()}] ({seg_time:.1f}s)")
+            self.set_emotion(emotion)
             time.sleep(seg_time)
 
-        # Return to calm normal expression once speaking finishes
+        # Brief post-speech settling pause before returning to calm normal
+        time.sleep(0.4)
         self.normal()
 
     # Emotions
@@ -208,7 +212,7 @@ class RobotController:
         if method and callable(method):
             method()
         else:
-            self.normal()
+            self.happy()
 
     def normal(self): self.send("NORMAL")
     def happy(self): self.send("HAPPY")
@@ -228,6 +232,16 @@ class RobotController:
     def furious(self): self.send("FURIOUS")
     def scared(self): self.send("SCARED")
     def awe(self): self.send("AWE")
+
+    # Compatibility Aliases
+    def set_face(self, emotion):
+        self.set_emotion(emotion)
+
+    def speak(self, url, duration=0):
+        self.play_audio(url)
+
+    def connect(self):
+        self._connect(silent=False)
 
     def close(self):
         self._running = False

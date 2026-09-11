@@ -1,7 +1,18 @@
 """
-IKRU Audio Service
-Manages natural text-to-speech synthesis (Chatterbox-Nano / Edge-TTS)
-and local HTTP audio streaming to the ESP32 MAX98357A I2S audio receiver.
+IKRU Natural Voice Audio Service
+=================================
+Expressive speech synthesis for PROJECT IKRU supporting:
+1. Chatterbox TTS (Resemble AI):
+   - Local neural voice synthesis with rich emotional expressiveness.
+   - Native support for inline paralinguistic sound tags:
+     [chuckle], [laugh], [sigh], [gasp], [clear throat], [cough], [yawn]
+   - Zero-shot voice cloning with custom audio prompt WAV.
+   - Multilingual support (23+ languages) via ChatterboxMultilingualTTS.
+2. Edge-TTS (Microsoft Neural Voices):
+   - Fast online neural voice fallback with regional accents and pitch control.
+3. Dual Output:
+   - Resampled to 44.1kHz 16-bit Stereo PCM WAV served via HTTP (port 8000) for ESP32 MAX98357A I2S streaming.
+   - Optional local PC speaker playback (via Windows winsound).
 """
 
 import asyncio
@@ -15,15 +26,74 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 from scipy.signal import resample_poly
 import soundfile as sf
 
-# Default reference voice path for Chatterbox voice cloning
-DEFAULT_REF_VOICE = Path(__file__).resolve().parent / "voices" / "ikru_voice.wav"
-FALLBACK_REF_VOICE = Path(__file__).resolve().parents[3] / "tests" / "audio" / "ikru_voice.wav"
+# Optional PyTorch & Chatterbox TTS
+try:
+    import torch
+    import torchaudio as ta
+    from chatterbox.tts import ChatterboxTTS
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    HAS_CHATTERBOX = True
+except Exception as e:
+    HAS_CHATTERBOX = False
+
+# Optional Windows native PC audio playback
+try:
+    import winsound
+    HAS_WINSOUND = True
+except ImportError:
+    HAS_WINSOUND = False
+
+# Regional Edge-TTS voice presets for fallback
+VOICE_PRESETS = {
+    "guy": {
+        "voice": "en-US-GuyNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "desc": "US Male (Natural Companion)",
+    },
+    "jenny": {
+        "voice": "en-US-JennyNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "desc": "US Female (Warm Conversational)",
+    },
+    "ana": {
+        "voice": "en-US-AnaNeural",
+        "rate": "+5%",
+        "pitch": "+8Hz",
+        "desc": "US Playful Animated Robot",
+    },
+    "ryan": {
+        "voice": "en-GB-RyanNeural",
+        "rate": "-2%",
+        "pitch": "+0Hz",
+        "desc": "British English Refined",
+    },
+    "natasha": {
+        "voice": "en-AU-NatashaNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "desc": "Australian English Friendly",
+    },
+    "prabhat": {
+        "voice": "en-IN-PrabhatNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "desc": "Indian English Clear",
+    },
+}
+
+# OLED Eye emotions (to strip from spoken audio so they are not spoken aloud)
+OLED_EMOTION_TAGS = (
+    "normal|happy|glee|sad|worried|focused|annoyed|surprised|"
+    "skeptic|frustrated|unimpressed|sleepy|suspicious|squint|angry|furious|scared|awe"
+)
 
 
 class AudioService:
@@ -31,47 +101,97 @@ class AudioService:
         self,
         host_ip: Optional[str] = None,
         port: int = 8000,
-        engine: str = "chatterbox",  # "chatterbox" or "edge"
-        ref_audio_path: Optional[str] = None,
-        edge_voice: str = "en-US-GuyNeural",
-        device: str = "auto",
+        engine: str = "chatterbox",  # "chatterbox", "chatterbox_mtl", or "edge"
+        voice: str = "guy",
+        rate: Optional[str] = None,
+        pitch: Optional[str] = None,
+        robot_ip: str = "192.168.1.42",
+        play_pc: bool = True,
+        audio_prompt_path: Optional[str] = None,
+        language_id: Optional[str] = None,
+        device: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        **kwargs,
     ):
+        """
+        Initializes the AudioService.
+        :param host_ip: Local PC IP to serve audio from (auto-detected if None).
+        :param port: HTTP server port (default: 8000).
+        :param engine: 'chatterbox' (default), 'chatterbox_mtl', or 'edge'.
+        :param voice: Voice preset name ('guy', 'jenny', 'ana', etc.) for Edge-TTS fallback.
+        :param rate: Speech speed adjustment for Edge-TTS.
+        :param pitch: Voice pitch adjustment for Edge-TTS.
+        :param robot_ip: Target ESP32 IP for interface route detection.
+        :param play_pc: Also play the audio locally on the PC speaker via winsound.
+        :param audio_prompt_path: Path to reference audio WAV for voice cloning with Chatterbox.
+        :param language_id: Language code for multilingual Chatterbox (e.g. 'fr', 'zh', 'es').
+        :param device: PyTorch compute device ('cuda' or 'cpu'). Auto-selected if None.
+        """
         self.port = port
+        self.robot_ip = robot_ip
+        self.play_pc = play_pc
+        self.volume: float = 1.0
         self.engine = engine.lower()
-        self.edge_voice = edge_voice
-        self.device = device
+        self.audio_prompt_path = audio_prompt_path
+        self.language_id = language_id
         self.cache_dir = cache_dir or tempfile.gettempdir()
         self.wav_filename = "ikru_speech.wav"
         self.wav_path = os.path.join(self.cache_dir, self.wav_filename)
-        self.host_ip = host_ip or self._detect_local_ip()
+        self.mp3_path = os.path.join(self.cache_dir, "temp_ikru.mp3")
 
-        # Locate reference audio for voice cloning
-        if ref_audio_path and os.path.exists(ref_audio_path):
-            self.ref_audio_path = str(ref_audio_path)
-        elif DEFAULT_REF_VOICE.exists():
-            self.ref_audio_path = str(DEFAULT_REF_VOICE)
-        elif FALLBACK_REF_VOICE.exists():
-            self.ref_audio_path = str(FALLBACK_REF_VOICE)
+        # Resolve compute device for Chatterbox
+        if device:
+            self.device = device
+        elif HAS_CHATTERBOX and torch.cuda.is_available():
+            self.device = "cuda"
         else:
-            self.ref_audio_path = None
+            self.device = "cpu"
+
+        # Model handles (lazy-loaded or initialized on first use)
+        self.chatterbox_model: Optional[ChatterboxTTS] = None
+        self.multilingual_model: Optional[ChatterboxMultilingualTTS] = None
+
+        # Resolve Edge-TTS voice preset
+        preset = VOICE_PRESETS.get(voice.lower())
+        if preset:
+            self.voice = preset["voice"]
+            self.rate = rate or preset["rate"]
+            self.pitch = pitch or preset["pitch"]
+            self.voice_label = f"{preset['desc']} ({self.voice})"
+        else:
+            self.voice = voice
+            self.rate = rate or "+0%"
+            self.pitch = pitch or "+0Hz"
+            self.voice_label = self.voice
+
+        self.host_ip = host_ip or self._detect_local_ip(target_ip=self.robot_ip)
+        self.last_duration: float = 0.0
 
         self._server: Optional[socketserver.TCPServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._running = False
-        self.last_duration: float = 0.0
 
-        # Chatterbox-Nano model instance
-        self._chatterbox_model = None
-
-        if self.engine == "chatterbox":
-            self._init_chatterbox()
+        if self.engine.startswith("chatterbox") and HAS_CHATTERBOX:
+            print(f"[AudioService] Voice Engine: Chatterbox TTS (lazy load on demand, device: {self.device})")
+            if self.audio_prompt_path:
+                print(f"[AudioService] Voice Prompt: {self.audio_prompt_path}")
+        else:
+            print(f"[AudioService] Voice Engine: Edge-TTS | Voice: {self.voice_label}")
 
         self._start_server()
 
-    def _detect_local_ip(self) -> str:
-        """Finds the most appropriate local network IP address."""
+    def _detect_local_ip(self, target_ip: str = "192.168.1.42") -> str:
+        """Finds the local IP address on the interface communicating with target_ip."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((target_ip, 81))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            pass
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -79,39 +199,10 @@ class AudioService:
             s.close()
             return ip
         except Exception:
-            return "192.168.1.33"
-
-    def _init_chatterbox(self):
-        """Initializes Chatterbox-Nano and pre-caches the reference voice embedding."""
-        try:
-            import torch
-            from chatterbox.tts_turbo import ChatterboxTurboTTS
-
-            if self.device == "auto":
-                target_device = "cuda" if torch.cuda.is_available() else "cpu"
-            else:
-                target_device = self.device
-
-            print(f"[AudioService] Loading Chatterbox-Nano TTS on {target_device}...")
-            t0 = time.time()
-            self._chatterbox_model = ChatterboxTurboTTS.from_pretrained(device=target_device, nano=True)
-            print(f"[AudioService] Chatterbox-Nano loaded in {time.time() - t0:.2f}s")
-
-            # Pre-compute and cache reference voice conditionals
-            if self.ref_audio_path and os.path.exists(self.ref_audio_path):
-                print(f"[AudioService] Caching reference voice profile from: {Path(self.ref_audio_path).name}")
-                self._chatterbox_model.prepare_conditionals(self.ref_audio_path)
-                print(f"[AudioService] Voice profile active as primary IKRU voice.")
-            else:
-                print("[AudioService] No reference clip found; using default Chatterbox voice.")
-
-        except Exception as e:
-            print(f"[AudioService] Warning: Could not initialize Chatterbox-Nano ({e}). Falling back to Edge-TTS.")
-            self.engine = "edge"
-            self._chatterbox_model = None
+            return "192.168.1.36"
 
     def _start_server(self):
-        """Starts the background HTTP server serving audio files."""
+        """Starts the background HTTP audio streaming server."""
         service_self = self
 
         class AudioHTTPHandler(http.server.SimpleHTTPRequestHandler):
@@ -119,139 +210,360 @@ class AudioService:
                 super().__init__(*args, directory=service_self.cache_dir, **kwargs)
 
             def log_message(self, format, *args):
-                pass
+                client_ip = self.client_address[0]
+                print(f"[Audio HTTP {time.strftime('%H:%M:%S')}] {client_ip} - {args[0]} (Status: {args[1]})")
+
+        class ReusableTCPServer(socketserver.TCPServer):
+            allow_reuse_address = True
 
         try:
-            self._server = socketserver.TCPServer(("0.0.0.0", self.port), AudioHTTPHandler)
-            self._server.allow_reuse_address = True
+            self._server = ReusableTCPServer(("0.0.0.0", self.port), AudioHTTPHandler)
             self._running = True
             self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
             self._server_thread.start()
             print(f"[AudioService] HTTP Audio Server running at http://{self.host_ip}:{self.port}/")
         except Exception as e:
-            print(f"[AudioService] Failed to start HTTP server on port {self.port}: {e}")
+            print(f"[AudioService] Warning: Failed to start HTTP server on port {self.port}: {e}")
 
-    def _clean_text_for_tts(self, text: str) -> str:
+    def _init_chatterbox(self):
+        """Pre-loads the Chatterbox model on startup."""
+        if not HAS_CHATTERBOX:
+            print("[AudioService] Warning: Chatterbox TTS not installed, defaulting to Edge-TTS.")
+            self.engine = "edge"
+            return
+
+        try:
+            if self.engine == "chatterbox_mtl" or self.language_id:
+                if self.multilingual_model is None:
+                    print(f"[AudioService] Initializing Chatterbox Multilingual TTS ({self.device})...")
+                    self.multilingual_model = ChatterboxMultilingualTTS.from_pretrained(
+                        device=self.device,
+                        t3_model="v3"
+                    )
+            else:
+                if self.chatterbox_model is None:
+                    print(f"[AudioService] Initializing Chatterbox TTS ({self.device})...")
+                    self.chatterbox_model = ChatterboxTTS.from_pretrained(device=self.device)
+            print(f"[AudioService] Chatterbox TTS loaded successfully!")
+        except Exception as e:
+            print(f"[AudioService] Error initializing Chatterbox ({e}). Falling back to Edge-TTS.")
+            self.engine = "edge"
+
+    def _clean_text_for_tts(self, text: str, preserve_paralinguistic: bool = True) -> str:
         """
-        Cleans and normalizes text for natural TTS output:
-        1. Fixes pronunciation of 'Ikru': converts all-caps 'IKRU' or 'I.K.R.U.'
-           to 'Ikru' so the tokenizer pronounces it as a unified word ('Ik-roo')
-           rather than spelling out each letter individually.
-        2. Strips OLED facial emotion tags ([happy], [worried], [focused], etc.)
-           while preserving Chatterbox voice tags ([chuckle], [laugh], [sigh], [gasp], [clear throat]).
+        Cleans and normalizes text for speech synthesis:
+        1. Normalizes 'IKRU' / 'I.K.R.U.' acronym to 'Ikru' ('Ik-roo').
+        2. Strips camera observation artifacts and prompt tags like '[Camera Visual Observation: ...]'.
+        3. Normalizes voice tag variations ([clear throat], [laugh], [chuckle]) to Chatterbox's exact
+           supported special tokens ([clear_throat], [laughter], [giggle], [sigh], [gasp], [cry], etc.).
+        4. Strips all OLED eye emotions ([happy], [focused], [sad], etc.) and any other bracketed tags
+           so they are NEVER read aloud as words.
+        5. Ensures proper spacing around vocal tokens so the BPE tokenizer recognizes them as special tokens.
+        6. Cleans extraneous punctuation spacing, markdown, and whitespace.
         """
-        # Fix letter-by-letter acronym pronunciation
+        if not text:
+            return ""
+
+        # Strip stray JSON and markdown tokens before tag normalization
+        text = re.sub(r'[\{\}\`\*\_]', ' ', text)
+
+        # Normalize 'IKRU' pronunciation
         text = re.sub(r'\bI[Kk][Rr][Uu]\b', 'Ikru', text)
         text = re.sub(r'\bI\.K\.R\.U\.\b', 'Ikru', text)
         text = re.sub(r'\bi-k-r-u\b', 'Ikru', text, flags=re.IGNORECASE)
 
-        # Strip OLED eye emotion tags (keep paralinguistic voice sound tags)
-        oled_tags = (
-            "normal|happy|glee|sad|worried|focused|annoyed|surprised|"
-            "skeptic|frustrated|unimpressed|sleepy|suspicious|squint|"
-            "angry|furious|scared|awe"
-        )
-        text = re.sub(r'\[' + oled_tags + r'\]', '', text, flags=re.IGNORECASE)
+        # Strip vision/camera observation prompt leaks
+        text = re.sub(r'\[Camera Visual Observation:[^\]]*\]', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\[Camera[^\]]*\]', '', text, flags=re.IGNORECASE)
 
-        # Clean excess spaces
+        if preserve_paralinguistic:
+            # Map vocal sound aliases to Chatterbox's exact vocabulary tokens
+            vocal_aliases = [
+                (re.compile(r'\[clear[\s_]?throat\]', re.IGNORECASE), ' [clear_throat] '),
+                (re.compile(r'\[clear\]', re.IGNORECASE), ' [clear_throat] '),
+                (re.compile(r'\[throat[\s_]?clear\]', re.IGNORECASE), ' [clear_throat] '),
+                (re.compile(r'\[laugh(?:ing|s|ter)?\]', re.IGNORECASE), ' [laughter] '),
+                (re.compile(r'\[haha+\]', re.IGNORECASE), ' [laughter] '),
+                (re.compile(r'\[cackle\]', re.IGNORECASE), ' [laughter] '),
+                (re.compile(r'\[chuckle[sd]?\]', re.IGNORECASE), ' [giggle] '),
+                (re.compile(r'\[giggle[sd]?\]', re.IGNORECASE), ' [giggle] '),
+                (re.compile(r'\[snicker[sd]?\]', re.IGNORECASE), ' [giggle] '),
+                (re.compile(r'\[sigh[sd]?\]', re.IGNORECASE), ' [sigh] '),
+                (re.compile(r'\[gasp[sd]?\]', re.IGNORECASE), ' [gasp] '),
+                (re.compile(r'\[cry(?:ing)?\]', re.IGNORECASE), ' [cry] '),
+                (re.compile(r'\[sob(?:bing|s)?\]', re.IGNORECASE), ' [cry] '),
+                (re.compile(r'\[groan[sd]?\]', re.IGNORECASE), ' [groan] '),
+                (re.compile(r'\[whisper(?:ing|s)?\]', re.IGNORECASE), ' [whisper] '),
+                (re.compile(r'\[cough(?:ing|s)?\]', re.IGNORECASE), ' [cough] '),
+                (re.compile(r'\[sneeze[sd]?\]', re.IGNORECASE), ' [sneeze] '),
+                (re.compile(r'\[sniff(?:ing|s)?\]', re.IGNORECASE), ' [sniff] '),
+                (re.compile(r'\[snort[sd]?\]', re.IGNORECASE), ' [sniff] '),
+                (re.compile(r'\[yawn(?:ing|s|ed)?\]', re.IGNORECASE), ' [sigh] '),
+            ]
+            for pattern, repl in vocal_aliases:
+                text = pattern.sub(repl, text)
+
+            # Whitelist of valid Chatterbox special tokens
+            valid_chatterbox_tags = {
+                '[clear_throat]', '[laughter]', '[giggle]', '[sigh]',
+                '[gasp]', '[groan]', '[cry]', '[whisper]', '[sniff]',
+                '[cough]', '[sneeze]', '[inhale]', '[exhale]'
+            }
+
+            # Strip any bracketed tag that is NOT in the valid vocal token whitelist
+            # (This eliminates all OLED emotions like [happy], [focused], [sad], [annoyed], etc.)
+            def _filter_bracketed_tags(match):
+                tag = match.group(0).lower()
+                return tag if tag in valid_chatterbox_tags else ''
+
+            text = re.sub(r'\[[^\]]+\]', _filter_bracketed_tags, text)
+
+            # Ensure isolated spacing around valid vocal tags so tokenizer never splits them
+            text = re.sub(
+                r'\s*(\[(?:clear_throat|laughter|giggle|sigh|gasp|groan|cry|whisper|sniff|cough|sneeze|inhale|exhale)\])\s*',
+                r' \1 ',
+                text,
+            )
+        else:
+            # For Edge-TTS or non-Chatterbox engines, strip all bracketed tags
+            text = re.sub(r'\[[^\]]*\]', '', text)
+
+        # Clean punctuation spacing (e.g. "word ." -> "word.")
+        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+
+        # Collapse excess whitespace
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def synthesize(self, text: str) -> Optional[str]:
-        """
-        Synthesizes text into 44.1kHz 16-bit Stereo PCM WAV.
-        Primary: Chatterbox-Nano with cloned voice.
-        Fallback: Edge-TTS.
-        Returns the HTTP stream URL, or None on failure.
-        """
-        if not text or not text.strip():
-            return None
+    def set_voice(self, voice: str, rate: Optional[str] = None, pitch: Optional[str] = None):
+        """Dynamically updates the active Edge-TTS voice and expression preset."""
+        preset = VOICE_PRESETS.get(voice.lower())
+        if preset:
+            self.voice = preset["voice"]
+            self.rate = rate or preset["rate"]
+            self.pitch = pitch or preset["pitch"]
+            self.voice_label = f"{preset['desc']} ({self.voice})"
+        else:
+            self.voice = voice
+            self.rate = rate or "+0%"
+            self.pitch = pitch or "+0Hz"
+            self.voice_label = self.voice
+        print(f"[AudioService] Active Voice changed to: {self.voice_label}")
 
-        clean_text = self._clean_text_for_tts(text)
-        if not clean_text:
-            return None
+    def set_engine(self, engine: str):
+        """Switches synthesis engine between 'chatterbox', 'chatterbox_mtl', and 'edge'."""
+        self.engine = engine.lower()
+        if self.engine.startswith("chatterbox"):
+            self._init_chatterbox()
+        print(f"[AudioService] Active TTS Engine changed to: {self.engine}")
 
-        with self._lock:
-            # 1. Primary: Chatterbox-Nano
-            if self.engine == "chatterbox" and self._chatterbox_model is not None:
-                try:
-                    # Model conditionals were pre-cached during init, so generate() uses cloned voice
-                    wav_tensor = self._chatterbox_model.generate(clean_text)
+    def set_audio_prompt(self, audio_prompt_path: Optional[str]):
+        """Sets custom reference WAV for zero-shot voice cloning with Chatterbox."""
+        self.audio_prompt_path = audio_prompt_path
+        print(f"[AudioService] Audio Prompt Path set to: {self.audio_prompt_path}")
 
-                    # Extract to NumPy float32
-                    data = wav_tensor.detach().cpu().squeeze().numpy().astype(np.float32)
-                    sr = self._chatterbox_model.sr
-                    return self._save_resampled_wav(data, sr)
-                except Exception as e:
-                    print(f"[AudioService] Chatterbox synthesis error ({e}). Trying fallback...")
+    def set_play_pc(self, play_pc: bool):
+        """Dynamically updates PC speaker playback and purges playing audio if disabled."""
+        self.play_pc = bool(play_pc)
+        if not self.play_pc and HAS_WINSOUND and os.name == "nt":
+            try:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
 
-            # 2. Fallback: Edge-TTS
-            return self._synthesize_edge_tts(clean_text)
+    def set_volume(self, volume: float):
+        """Sets master audio volume scale factor (0.0 to 1.0)."""
+        self.volume = max(0.0, min(1.0, float(volume)))
+        print(f"[AudioService] Master Volume set to {int(self.volume * 100)}%")
 
-    def _save_resampled_wav(self, data: np.ndarray, sample_rate: int) -> Optional[str]:
-        """Resamples audio data to 44.1kHz 16-bit stereo PCM WAV and writes to cache."""
+    def _synthesize_chatterbox(
+        self,
+        clean_text: str,
+        audio_prompt_path: Optional[str] = None,
+        language_id: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
+        """Synthesizes text using Chatterbox TTS (standard or multilingual)."""
+        prompt = audio_prompt_path or self.audio_prompt_path
+        lang = language_id or self.language_id
+
+        # Multilingual synthesis
+        if lang or self.engine == "chatterbox_mtl":
+            if self.multilingual_model is None:
+                self.multilingual_model = ChatterboxMultilingualTTS.from_pretrained(
+                    device=self.device,
+                    t3_model="v3"
+                )
+            wav = self.multilingual_model.generate(clean_text, language_id=lang or "en")
+            sr = self.multilingual_model.sr
+        else:
+            # Standard English expressive synthesis with paralinguistic tag support
+            if self.chatterbox_model is None:
+                self.chatterbox_model = ChatterboxTTS.from_pretrained(device=self.device)
+
+            if prompt and os.path.exists(prompt):
+                wav = self.chatterbox_model.generate(clean_text, audio_prompt_path=prompt)
+            else:
+                wav = self.chatterbox_model.generate(clean_text)
+            sr = self.chatterbox_model.sr
+
+        # Convert torch tensor to numpy
+        if isinstance(wav, torch.Tensor):
+            audio_np = wav.squeeze().detach().cpu().numpy()
+        else:
+            audio_np = np.array(wav).squeeze()
+
+        # Resample to 44.1kHz (44100 Hz required by ESP32 MAX98357A I2S)
         target_rate = 44100
+        if sr != target_rate:
+            g = math.gcd(target_rate, sr)
+            up = target_rate // g
+            down = sr // g
+            audio_np = resample_poly(audio_np, up, down)
 
+        # Ensure stereo 2-channel array
+        if audio_np.ndim == 1:
+            stereo_data = np.column_stack((audio_np, audio_np))
+        else:
+            stereo_data = audio_np
+
+        return stereo_data
+
+    def _synthesize_edge_tts(self, clean_text: str) -> Optional[np.ndarray]:
+        """Synthesizes text using Edge-TTS Communicator."""
+        import edge_tts
+
+        async def _save_mp3():
+            communicate = edge_tts.Communicate(
+                clean_text,
+                self.voice,
+                rate=self.rate,
+                pitch=self.pitch,
+            )
+            await communicate.save(self.mp3_path)
+
+        asyncio.run(_save_mp3())
+
+        if not os.path.exists(self.mp3_path):
+            return None
+
+        # Read MP3 audio data
+        data, sample_rate = sf.read(self.mp3_path)
+
+        # Resample to 44100 Hz
+        target_rate = 44100
         if sample_rate != target_rate:
             g = math.gcd(target_rate, sample_rate)
             up = target_rate // g
             down = sample_rate // g
             data = resample_poly(data, up, down)
 
-        # Convert to 2-channel stereo
+        # Ensure 2-channel stereo
         if data.ndim == 1:
             stereo_data = np.column_stack((data, data))
         else:
             stereo_data = data
 
-        self.last_duration = float(len(data) / target_rate)
-        sf.write(self.wav_path, stereo_data, target_rate, subtype="PCM_16")
-
-        return f"http://{self.host_ip}:{self.port}/{self.wav_filename}?t={int(time.time()*1000)}"
-
-    def _synthesize_edge_tts(self, clean_text: str) -> Optional[str]:
-        """Edge-TTS synthesis helper."""
-        import edge_tts
-        mp3_path = os.path.join(self.cache_dir, f"temp_{int(time.time()*1000)}.mp3")
-
-        async def _generate():
-            communicate = edge_tts.Communicate(clean_text, self.edge_voice)
-            await communicate.save(mp3_path)
-
-        try:
+        if os.path.exists(self.mp3_path):
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                os.remove(self.mp3_path)
+            except Exception:
+                pass
 
-            if loop.is_running():
-                future = asyncio.run_coroutine_threadsafe(_generate(), loop)
-                future.result(timeout=15)
-            else:
-                loop.run_until_complete(_generate())
+        return stereo_data
 
-            data, sr = sf.read(mp3_path)
-            if os.path.exists(mp3_path):
-                os.remove(mp3_path)
-
-            return self._save_resampled_wav(data, sr)
-        except Exception as e:
-            print(f"[AudioService] Edge-TTS error: {e}")
-            if os.path.exists(mp3_path):
-                try:
-                    os.remove(mp3_path)
-                except Exception:
-                    pass
+    def synthesize(
+        self,
+        text: str,
+        play_pc: Optional[bool] = None,
+        voice: Optional[str] = None,
+        engine: Optional[str] = None,
+        audio_prompt_path: Optional[str] = None,
+        language_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Synthesizes text into 44.1kHz 16-bit Stereo PCM WAV:
+        1. Cleans text (preserving [chuckle], [laugh] tags for Chatterbox).
+        2. Generates speech via Chatterbox TTS (with Edge-TTS fallback).
+        3. Saves 16-bit Stereo PCM WAV at self.wav_path.
+        4. Optionally plays on PC speaker if play_pc is True.
+        Returns the HTTP stream URL for ESP32 I2S playback.
+        """
+        if not text or not text.strip():
             return None
+
+        active_engine = (engine or self.engine).lower()
+        use_chatterbox = active_engine.startswith("chatterbox") and HAS_CHATTERBOX
+
+        # Clean text: keep paralinguistic voice tags for Chatterbox, strip for Edge-TTS
+        clean_text = self._clean_text_for_tts(text, preserve_paralinguistic=use_chatterbox)
+        if not clean_text:
+            return None
+
+        if voice:
+            self.set_voice(voice)
+
+        should_play_pc = self.play_pc if play_pc is None else bool(play_pc)
+        target_rate = 44100
+        stereo_data = None
+
+        with self._lock:
+            try:
+                # 1. Primary synthesis: Chatterbox TTS
+                if use_chatterbox:
+                    try:
+                        stereo_data = self._synthesize_chatterbox(
+                            clean_text,
+                            audio_prompt_path=audio_prompt_path,
+                            language_id=language_id,
+                        )
+                    except Exception as e:
+                        print(f"[AudioService] Chatterbox synthesis error ({e}). Falling back to Edge-TTS...")
+                        clean_text_edge = self._clean_text_for_tts(text, preserve_paralinguistic=False)
+                        stereo_data = self._synthesize_edge_tts(clean_text_edge)
+
+                # 2. Secondary synthesis: Edge-TTS
+                else:
+                    stereo_data = self._synthesize_edge_tts(clean_text)
+
+                if stereo_data is None:
+                    return None
+
+                # Apply master volume scaling
+                if self.volume != 1.0:
+                    stereo_data = np.clip(stereo_data * self.volume, -1.0, 1.0)
+
+                # Calculate duration in seconds
+                self.last_duration = float(len(stereo_data) / target_rate)
+
+                # Write 16-bit Stereo PCM WAV
+                sf.write(self.wav_path, stereo_data, target_rate, subtype="PCM_16")
+
+                # Optional local PC speaker playback (winsound)
+                if should_play_pc and HAS_WINSOUND and os.name == "nt":
+                    try:
+                        winsound.PlaySound(self.wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    except Exception as e:
+                        print(f"[AudioService] PC Playback error: {e}")
+                elif not should_play_pc and HAS_WINSOUND and os.name == "nt":
+                    try:
+                        winsound.PlaySound(None, winsound.SND_PURGE)
+                    except Exception:
+                        pass
+
+                # Return fresh HTTP streaming URL (simple path for ESP32 HTTPClient)
+                return f"http://{self.host_ip}:{self.port}/{self.wav_filename}"
+
+            except Exception as e:
+                print(f"[AudioService] Synthesis error: {e}")
+                return None
 
     def stop(self):
         """Stops the audio HTTP server."""
         self._running = False
         if self._server:
-            self._server.shutdown()
-            self._server.server_close()
+            try:
+                self._server.shutdown()
+                self._server.server_close()
+            except Exception:
+                pass
             print("[AudioService] HTTP Audio Server stopped.")

@@ -80,10 +80,11 @@ def test_chatterbox_nano(device: str = "auto", ref_clip: str = None, play_audio:
     try:
         import torch
         import torchaudio as ta
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
+        from chatterbox.tts import ChatterboxTTS
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
     except ImportError as e:
         print("\n[!] Chatterbox-TTS or PyTorch is not currently installed.")
-        print("    To install Chatterbox-Nano:")
+        print("    To install Chatterbox:")
         print("      pip install chatterbox-tts")
         print("    For GPU acceleration with PyTorch CUDA:")
         print("      pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126")
@@ -96,40 +97,57 @@ def test_chatterbox_nano(device: str = "auto", ref_clip: str = None, play_audio:
     else:
         target_device = device
 
-    print(f"[*] Loading Chatterbox-Nano model on device: {target_device} (nano=True)...")
+    print(f"[*] Loading Chatterbox TTS model on device: {target_device}...")
     t0 = time.time()
     try:
-        model = ChatterboxTurboTTS.from_pretrained(device=target_device, nano=True)
+        model = ChatterboxTTS.from_pretrained(device=target_device)
     except Exception as e:
-        print(f"[!] Error loading Chatterbox-Nano: {e}")
+        print(f"[!] Error loading Chatterbox: {e}")
         return []
     print(f"[+] Model loaded in {time.time() - t0:.2f}s")
 
+    import soundfile as sf
+
     test_prompts = [
         (
-            "chatterbox_1_chuckle.wav",
-            "Friendly / Chuckle",
-            "Hi there! IKRU here [chuckle], have you got one minute to chat about our robotics project?"
+            "chatterbox_1_giggle.wav",
+            "Playful Chuckle / Giggle",
+            "Hi there! Ikru here [giggle], have you got a minute to chat about our robotics project?"
         ),
         (
-            "chatterbox_2_laugh.wav",
-            "Amused / Laugh",
-            "Wait, you actually thought I couldn't see you? [laugh] That's hilarious!"
+            "chatterbox_2_laughter.wav",
+            "Amused / Hearty Laugh",
+            "Wait, you actually thought I couldn't see you? [laughter] That's hilarious!"
         ),
         (
             "chatterbox_3_sigh.wav",
-            "Relief / Sigh",
+            "Relief / Deep Sigh",
             "Whew, I just finished exploring the whole living room [sigh]. My motors need a quick recharge."
         ),
         (
             "chatterbox_4_gasp.wav",
-            "Surprise / Gasp",
+            "Surprise / Dramatic Gasp",
             "Look over there! [gasp] Did you see how fast that was?"
         ),
         (
-            "chatterbox_5_robot_tag.wav",
-            "Conversational Robot",
-            "Hold on, let me compute the trajectory... [clear throat] Okay, path is clear, moving forward now!"
+            "chatterbox_5_clear_throat.wav",
+            "Thoughtful / Throat Clear",
+            "Hold on, let me compute the trajectory... [clear_throat] Okay, path is clear, moving forward now!"
+        ),
+        (
+            "chatterbox_6_cry.wav",
+            "Sympathetic / Sad Cry",
+            "Oh no... [cry] That is really heartbreaking. I am here for you, friend."
+        ),
+        (
+            "chatterbox_7_whisper.wav",
+            "Conspiratorial / Quiet Whisper",
+            "Come closer... [whisper] I discovered where they hid the extra potato batteries."
+        ),
+        (
+            "chatterbox_8_groan.wav",
+            "Playful Grumpiness / Groan",
+            "Ugh... [groan] Do I really have to wake up from my power nap already?"
         )
     ]
 
@@ -148,7 +166,8 @@ def test_chatterbox_nano(device: str = "auto", ref_clip: str = None, play_audio:
             else:
                 wav = model.generate(text)
 
-            ta.save(out_path, wav, model.sr)
+            audio_np = wav.squeeze().cpu().numpy()
+            sf.write(out_path, audio_np, model.sr)
             gen_time = time.time() - t_start
             print(f"    Generated in {gen_time:.2f}s -> {filename}")
             generated_files.append((label, out_path))
@@ -348,8 +367,8 @@ def main():
                         help="Do not play audio through PC speakers automatically")
     parser.add_argument("--stream-to-robot", action="store_true",
                         help="Also stream the sample to IKRU robot over WiFi")
-    parser.add_argument("--robot-ip", default="192.168.1.40",
-                        help="ESP32 Robot IP address (default: 192.168.1.40)")
+    parser.add_argument("--robot-ip", default="192.168.1.42",
+                        help="ESP32 Robot IP address (default: 192.168.1.42)")
 
     args = parser.parse_args()
 

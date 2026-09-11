@@ -1,10 +1,13 @@
 #include "Face.h"
 #include <HTTPClient.h>
+#include <Preferences.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <Wire.h>
 #include "ESP_I2S.h"
+
+Preferences preferences;
 
 // ============================================================
 // IKRU DESK COMPANION ROBOT
@@ -69,6 +72,7 @@ char pendingAudioURL[256] = "";
 volatile bool hasAudioRequest = false;
 volatile bool isAudioPlaying = false;
 volatile bool stopAudioRequested = false;
+volatile float currentVolumeFactor = 1.0f;
 TaskHandle_t audioTaskHandle = NULL;
 
 // ============================================================
@@ -747,6 +751,73 @@ void showWiFiConnected() {
 }
 
 // ============================================================
+// DYNAMIC WIFI CONFIGURATION (NVS + RECONNECT)
+// ============================================================
+
+void applyNewWiFi(String new_ssid, String new_pass) {
+  Serial.println();
+  Serial.println("==============================");
+  Serial.print("[WiFi] Switching to: ");
+  Serial.println(new_ssid);
+  Serial.println("==============================");
+
+  // Show on OLED
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(0, 14, "Configuring WiFi...");
+  u8g2.drawStr(0, 30, new_ssid.substring(0, 20).c_str());
+  u8g2.drawStr(0, 48, "Please wait...");
+  u8g2.sendBuffer();
+
+  WiFi.disconnect(true);
+  delay(500);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  WiFi.begin(new_ssid.c_str(), new_pass.c_str());
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 25) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.println("Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    // Save to NVS
+    preferences.begin("ikru_wifi", false);
+    preferences.putString("ssid", new_ssid);
+    preferences.putString("pass", new_pass);
+    preferences.end();
+    Serial.println("[WiFi] Saved credentials to flash memory (NVS).");
+
+    showWiFiConnected();
+  } else {
+    Serial.println();
+    Serial.println("WiFi connect failed! Reverting to fallback...");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 20, "WiFi Connect Failed!");
+    u8g2.drawStr(0, 38, "Reverting to fallback");
+    u8g2.sendBuffer();
+    delay(1500);
+
+    WiFi.begin(fallback_ssid, fallback_pass);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    showWiFiConnected();
+  }
+}
+
+// ============================================================
 // AUDIO STREAMING & PLAYBACK (I2S MAX98357A)
 // ============================================================
 
@@ -873,6 +944,13 @@ void audioPlaybackTask(void *pvParameters) {
             }
 
             if (bytesRead == 0) break;
+            if (currentVolumeFactor < 0.99f) {
+              int16_t *samples = (int16_t *)audioBuffer;
+              size_t numSamples = bytesRead / sizeof(int16_t);
+              for (size_t i = 0; i < numSamples; i++) {
+                samples[i] = (int16_t)(samples[i] * currentVolumeFactor);
+              }
+            }
             I2S.write(audioBuffer, bytesRead);
             remaining -= bytesRead;
           }
@@ -945,7 +1023,21 @@ void setup() {
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
 
-  WiFi.begin(primary_ssid, primary_pass);
+  // Load saved Wi-Fi from NVS if available
+  preferences.begin("ikru_wifi", true);
+  String saved_ssid = preferences.getString("ssid", "");
+  String saved_pass = preferences.getString("pass", "");
+  preferences.end();
+
+  const char *connect_ssid = saved_ssid.length() > 0 ? saved_ssid.c_str() : primary_ssid;
+  const char *connect_pass = saved_pass.length() > 0 ? saved_pass.c_str() : primary_pass;
+
+  if (saved_ssid.length() > 0) {
+    Serial.print("[WiFi] Loaded saved credentials from NVS: ");
+    Serial.println(saved_ssid);
+  }
+
+  WiFi.begin(connect_ssid, connect_pass);
 
   int retries = 0;
   while (WiFi.status() != WL_CONNECTED && retries < 25) {
@@ -957,20 +1049,36 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nTrying fallback AP (IKRU-CAM)...");
     WiFi.begin(fallback_ssid, fallback_pass);
-    while (WiFi.status() != WL_CONNECTED) {
+    retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 15) {
       delay(500);
       Serial.print(".");
+      retries++;
     }
   }
 
-  WiFi.setSleep(false);
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n[WiFi] Could not connect to any network. Starting setup SoftAP: IKRU-SETUP");
+    WiFi.disconnect();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("IKRU-SETUP", "12345678");
+    Serial.print("[WiFi] AP IP address: ");
+    Serial.println(WiFi.softAPIP());
 
-  Serial.println();
-  Serial.println("Connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  showWiFiConnected();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 14, "AP Mode: IKRU-SETUP");
+    u8g2.drawStr(0, 30, "Pass: 12345678");
+    u8g2.drawStr(0, 48, "IP: 192.168.4.1");
+    u8g2.sendBuffer();
+    delay(1500);
+  } else {
+    Serial.println();
+    Serial.println("Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    showWiFiConnected();
+  }
 
   // WebSocket
   webSocket.begin();
@@ -1017,6 +1125,17 @@ void loop() {
 
   // Render to OLED
   u8g2.sendBuffer();
+
+  // Serial command listener (via USB)
+  if (Serial.available()) {
+    String serialCmd = Serial.readStringUntil('\n');
+    serialCmd.trim();
+    if (serialCmd.length() > 0) {
+      Serial.print("[Serial] Received: ");
+      Serial.println(serialCmd);
+      parseCommand(serialCmd);
+    }
+  }
 }
 
 // ============================================================
@@ -1031,14 +1150,12 @@ void webSocketEvent(uint8_t client, WStype_t type, uint8_t *payload,
     // CONNECTED
   case WStype_CONNECTED:
     Serial.println("Client Connected");
-    emotionHappy();
     break;
 
     // DISCONNECTED
   case WStype_DISCONNECTED:
     Serial.println("Client Disconnected");
     stopMotors();
-    emotionNormal();
     break;
 
     // TEXT
@@ -1096,6 +1213,38 @@ void parseCommand(String input) {
 
   if (input == "STOP_AUDIO") {
     stopAudioRequested = true;
+    return;
+  }
+
+  // ==========================================================
+  // VOLUME CONTROL COMMAND
+  // Format: VOLUME:<0-100> or SET_VOLUME:<0-100>
+  // ==========================================================
+
+  if (input.startsWith("VOLUME:") || input.startsWith("SET_VOLUME:")) {
+    int colonIdx = input.indexOf(':');
+    int vol = input.substring(colonIdx + 1).toInt();
+    vol = constrain(vol, 0, 100);
+    currentVolumeFactor = vol / 100.0f;
+    Serial.printf("[Audio] Firmware volume set to %d%% (factor: %.2f)\n", vol, currentVolumeFactor);
+    return;
+  }
+
+  // ==========================================================
+  // WIFI CONFIGURATION COMMAND (Case-sensitive SSID & Pass)
+  // Format: SET_WIFI:<ssid>:<pass>
+  // ==========================================================
+
+  if (input.startsWith("SET_WIFI:")) {
+    int firstColon = input.indexOf(':');
+    int secondColon = input.indexOf(':', firstColon + 1);
+    if (secondColon != -1) {
+      String new_ssid = input.substring(firstColon + 1, secondColon);
+      String new_pass = input.substring(secondColon + 1);
+      new_ssid.trim();
+      new_pass.trim();
+      applyNewWiFi(new_ssid, new_pass);
+    }
     return;
   }
 
