@@ -1,6 +1,8 @@
 #include "Face.h"
+#include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
@@ -8,6 +10,7 @@
 #include "ESP_I2S.h"
 
 Preferences preferences;
+WebServer setupServer(80);
 
 // ============================================================
 // IKRU DESK COMPANION ROBOT
@@ -28,11 +31,9 @@ Preferences preferences;
 // ============================================================
 
 // ============================================================
-// WIFI (Connecting to GNXS-2.4G-C457E1 or IKRU-CAM Head Access Point)
+// WIFI (Dynamic NVS + SoftAP Web Portal Setup)
 // ============================================================
 
-const char *primary_ssid = "GNXS-2.4G-C457E1";
-const char *primary_pass = "1234567890";
 const char *fallback_ssid = "IKRU-CAM";
 const char *fallback_pass = "ikru@potato";
 
@@ -929,21 +930,29 @@ void audioPlaybackTask(void *pvParameters) {
           uint32_t remaining = dataSize;
 
           while (remaining > 0 && stream->connected() && !stopAudioRequested) {
-            size_t toRead = min((uint32_t)AUDIO_BUFFER_SIZE, remaining);
-            toRead -= toRead % 4; // 16-bit stereo frame boundary
+            size_t maxToRead = min((uint32_t)1024, remaining);
 
             size_t bytesRead = 0;
-            while (bytesRead < toRead && !stopAudioRequested) {
-              if (stream->available()) {
-                int n = stream->read(audioBuffer + bytesRead, toRead - bytesRead);
-                if (n > 0) bytesRead += n;
-              } else {
-                if (!stream->connected()) break;
-                vTaskDelay(pdMS_TO_TICKS(1));
+            if (stream->available() > 0) {
+              int n = stream->read(audioBuffer, maxToRead);
+              if (n > 0) bytesRead = n;
+            } else {
+              vTaskDelay(pdMS_TO_TICKS(1));
+              if (stream->available() > 0) {
+                int n = stream->read(audioBuffer, maxToRead);
+                if (n > 0) bytesRead = n;
               }
             }
 
-            if (bytesRead == 0) break;
+            if (bytesRead == 0) {
+              if (!stream->connected()) break;
+              continue;
+            }
+
+            // Align to 4-byte stereo frame boundary (2 bytes Left + 2 bytes Right)
+            bytesRead -= (bytesRead % 4);
+            if (bytesRead == 0) continue;
+
             if (currentVolumeFactor < 0.99f) {
               int16_t *samples = (int16_t *)audioBuffer;
               size_t numSamples = bytesRead / sizeof(int16_t);
@@ -951,6 +960,7 @@ void audioPlaybackTask(void *pvParameters) {
                 samples[i] = (int16_t)(samples[i] * currentVolumeFactor);
               }
             }
+
             I2S.write(audioBuffer, bytesRead);
             remaining -= bytesRead;
           }
@@ -969,6 +979,66 @@ void audioPlaybackTask(void *pvParameters) {
 
     vTaskDelay(pdMS_TO_TICKS(20));
   }
+}
+
+// ============================================================
+// WIFI SETUP WEB PORTAL (Dynamic NVS Configuration)
+// ============================================================
+
+void handlePortalRoot() {
+  int n = WiFi.scanNetworks();
+  String options = "";
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    int32_t rssi = WiFi.RSSI(i);
+    options += "<option value='" + ssid + "'>" + ssid + " (" + String(rssi) + " dBm)</option>";
+  }
+  if (n == 0) {
+    options = "<option value=''>No networks found</option>";
+  }
+
+  String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<style>body{font-family:sans-serif;padding:20px;background:#121212;color:#fff;max-width:400px;margin:auto;}"
+                "select,input,button{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;border-radius:6px;border:1px solid #444;background:#222;color:#fff;font-size:15px;}"
+                "button{background:#007acc;font-weight:bold;border:none;cursor:pointer;}"
+                ".card{background:#1e1e1e;padding:20px;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,0.5);}</style></head><body>"
+                "<div class='card'><h2>IKRU Wi-Fi Setup</h2>"
+                "<form action='/save' method='POST'>"
+                "<label>Select Wi-Fi Network:</label>"
+                "<select name='ssid_select' onchange='if(this.value) document.getElementById(\"ssid_manual\").value=this.value;'>"
+                "<option value=''>-- Select Network --</option>" + options + "</select>"
+                "<label>Or Type SSID:</label>"
+                "<input type='text' id='ssid_manual' name='ssid' placeholder='Network SSID' required>"
+                "<label>Password:</label>"
+                "<input type='password' name='pass' placeholder='Wi-Fi Password'>"
+                "<button type='submit'>Save & Connect</button></form>"
+                "<br><a href='/' style='color:#007acc;text-decoration:none;'>Rescan Networks</a></div></body></html>";
+  setupServer.send(200, "text/html", html);
+}
+
+void handlePortalSave() {
+  if (setupServer.hasArg("ssid")) {
+    String s = setupServer.arg("ssid");
+    String p = setupServer.arg("pass");
+    preferences.begin("ikru_wifi", false);
+    preferences.putString("ssid", s);
+    preferences.putString("pass", p);
+    preferences.end();
+    setupServer.send(200, "text/html", "<html><body style='background:#121212;color:#fff;font-family:sans-serif;padding:20px;'><h3>Wi-Fi Credentials Saved!</h3><p>Restarting ESP32 and connecting...</p></body></html>");
+    delay(1000);
+    ESP.restart();
+  } else {
+    setupServer.send(400, "text/plain", "Missing SSID");
+  }
+}
+
+void handlePortalReset() {
+  preferences.begin("ikru_wifi", false);
+  preferences.clear();
+  preferences.end();
+  setupServer.send(200, "text/html", "<html><body><h3>Saved Wi-Fi Cleared! Restarting...</h3></body></html>");
+  delay(1000);
+  ESP.restart();
 }
 
 // ============================================================
@@ -1023,33 +1093,29 @@ void setup() {
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
 
-  // Load saved Wi-Fi from NVS if available
+  // Load saved Wi-Fi from NVS Flash
   preferences.begin("ikru_wifi", true);
   String saved_ssid = preferences.getString("ssid", "");
   String saved_pass = preferences.getString("pass", "");
   preferences.end();
 
-  const char *connect_ssid = saved_ssid.length() > 0 ? saved_ssid.c_str() : primary_ssid;
-  const char *connect_pass = saved_pass.length() > 0 ? saved_pass.c_str() : primary_pass;
-
   if (saved_ssid.length() > 0) {
-    Serial.print("[WiFi] Loaded saved credentials from NVS: ");
+    Serial.print("[WiFi] Connecting using saved NVS credentials: ");
     Serial.println(saved_ssid);
-  }
+    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
 
-  WiFi.begin(connect_ssid, connect_pass);
-
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 25) {
-    delay(500);
-    Serial.print(".");
-    retries++;
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 25) {
+      delay(500);
+      Serial.print(".");
+      retries++;
+    }
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nTrying fallback AP (IKRU-CAM)...");
     WiFi.begin(fallback_ssid, fallback_pass);
-    retries = 0;
+    int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 15) {
       delay(500);
       Serial.print(".");
@@ -1058,16 +1124,21 @@ void setup() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[WiFi] Could not connect to any network. Starting setup SoftAP: IKRU-SETUP");
+    Serial.println("\n[WiFi] Could not connect to any network. Starting Setup Portal: IKRU-SETUP");
     WiFi.disconnect();
     WiFi.mode(WIFI_AP);
     WiFi.softAP("IKRU-SETUP", "12345678");
     Serial.print("[WiFi] AP IP address: ");
     Serial.println(WiFi.softAPIP());
 
+    setupServer.on("/", HTTP_GET, handlePortalRoot);
+    setupServer.on("/save", HTTP_POST, handlePortalSave);
+    setupServer.on("/reset", HTTP_GET, handlePortalReset);
+    setupServer.begin();
+
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
-    u8g2.drawStr(0, 14, "AP Mode: IKRU-SETUP");
+    u8g2.drawStr(0, 14, "AP: IKRU-SETUP");
     u8g2.drawStr(0, 30, "Pass: 12345678");
     u8g2.drawStr(0, 48, "IP: 192.168.4.1");
     u8g2.sendBuffer();
@@ -1077,6 +1148,13 @@ void setup() {
     Serial.println("Connected!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
+
+    if (MDNS.begin("ikru-robot")) {
+      MDNS.addService("ws", "tcp", 81);
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("[mDNS] Responder active: ikru-robot.local");
+    }
+
     showWiFiConnected();
   }
 
@@ -1097,6 +1175,9 @@ void setup() {
 // ============================================================
 
 void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    setupServer.handleClient();
+  }
 
   // WebSocket
   webSocket.loop();

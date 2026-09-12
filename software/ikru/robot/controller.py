@@ -36,8 +36,27 @@ class RobotController:
         self._bg_thread.start()
 
     def _connect(self, silent=False):
-        candidates = [self.ip] if self.ip else []
-        for candidate in ["192.168.1.42", "192.168.1.34", "192.168.4.2", "192.168.4.3", "192.168.4.4", "192.168.1.37", "192.168.1.40"]:
+        import socket
+        candidates = []
+        if self.ip:
+            candidates.append(self.ip)
+        
+        # Add mDNS hostnames first
+        for host in ["ikru-robot.local", "ikru.local", "ikru-robot", "ikru"]:
+            if host not in candidates:
+                candidates.append(host)
+
+        # Try mDNS socket resolution to get active IP if possible
+        for host in ["ikru-robot.local", "ikru.local"]:
+            try:
+                resolved_ip = socket.gethostbyname(host)
+                if resolved_ip and resolved_ip not in candidates:
+                    candidates.insert(0, resolved_ip)
+            except Exception:
+                pass
+
+        # Fallback known static IP candidates
+        for candidate in ["192.168.1.42", "192.168.1.34", "192.168.4.2", "192.168.4.1", "192.168.1.37", "192.168.1.40"]:
             if candidate not in candidates:
                 candidates.append(candidate)
 
@@ -45,7 +64,7 @@ class RobotController:
             try:
                 if not silent:
                     print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
-                timeout_s = 4.0 if target_ip == self.ip else 1.5
+                timeout_s = 4.0 if target_ip in (self.ip, "ikru-robot.local") else 1.5
                 new_ws = websocket.create_connection(
                     f"ws://{target_ip}:{self.port}",
                     timeout=timeout_s,
@@ -164,6 +183,12 @@ class RobotController:
     def stop_audio(self):
         """Stops active audio playback on ESP32."""
         self.send("STOP_AUDIO")
+
+    def set_volume(self, volume: int):
+        """Sets robot speaker volume (0 to 100)."""
+        vol = max(0, min(100, int(volume)))
+        print(f"[Robot] Setting speaker volume to {vol}%")
+        return self.send(f"VOLUME:{vol}")
 
     def speak_segments(self, segments, audio_service=None, play_pc=None, stream_robot=True):
         """

@@ -36,6 +36,15 @@ import soundfile as sf
 try:
     import torch
     import torchaudio as ta
+
+    # Fix: perth.PerthImplicitWatermarker is None on Windows/CPU because the
+    # compiled native binary isn't available. Patch it with DummyWatermarker
+    # (same apply_watermark interface, just passes audio through unchanged)
+    # before ChatterboxTTS.__init__ tries to call it.
+    import perth
+    if perth.PerthImplicitWatermarker is None:
+        perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
     from chatterbox.tts import ChatterboxTTS
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
     HAS_CHATTERBOX = True
@@ -376,6 +385,21 @@ class AudioService:
         self.volume = max(0.0, min(1.0, float(volume)))
         print(f"[AudioService] Master Volume set to {int(self.volume * 100)}%")
 
+    def _fast_resample(self, data: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        """Fast sub-millisecond linear interpolation resampling for audio arrays."""
+        if orig_sr == target_sr or len(data) <= 1:
+            return data
+        old_len = len(data)
+        new_len = int(round(old_len * target_sr / orig_sr))
+        old_indices = np.arange(old_len)
+        new_indices = np.linspace(0, old_len - 1, new_len)
+        if data.ndim == 1:
+            return np.interp(new_indices, old_indices, data)
+        else:
+            return np.column_stack([
+                np.interp(new_indices, old_indices, data[:, ch]) for ch in range(data.shape[1])
+            ])
+
     def _synthesize_chatterbox(
         self,
         clean_text: str,
@@ -415,10 +439,7 @@ class AudioService:
         # Resample to 44.1kHz (44100 Hz required by ESP32 MAX98357A I2S)
         target_rate = 44100
         if sr != target_rate:
-            g = math.gcd(target_rate, sr)
-            up = target_rate // g
-            down = sr // g
-            audio_np = resample_poly(audio_np, up, down)
+            audio_np = self._fast_resample(audio_np, sr, target_rate)
 
         # Ensure stereo 2-channel array
         if audio_np.ndim == 1:
@@ -452,10 +473,7 @@ class AudioService:
         # Resample to 44100 Hz
         target_rate = 44100
         if sample_rate != target_rate:
-            g = math.gcd(target_rate, sample_rate)
-            up = target_rate // g
-            down = sample_rate // g
-            data = resample_poly(data, up, down)
+            data = self._fast_resample(data, sample_rate, target_rate)
 
         # Ensure 2-channel stereo
         if data.ndim == 1:
@@ -517,9 +535,15 @@ class AudioService:
                             language_id=language_id,
                         )
                     except Exception as e:
+                        import traceback
                         print(f"[AudioService] Chatterbox synthesis error ({e}). Falling back to Edge-TTS...")
-                        clean_text_edge = self._clean_text_for_tts(text, preserve_paralinguistic=False)
-                        stereo_data = self._synthesize_edge_tts(clean_text_edge)
+                        traceback.print_exc()
+                        try:
+                            clean_text_edge = self._clean_text_for_tts(text, preserve_paralinguistic=False)
+                            stereo_data = self._synthesize_edge_tts(clean_text_edge)
+                        except Exception as e2:
+                            print(f"[AudioService] Edge-TTS fallback also failed ({e2}). No audio produced.")
+                            return None
 
                 # 2. Secondary synthesis: Edge-TTS
                 else:
@@ -556,6 +580,41 @@ class AudioService:
             except Exception as e:
                 print(f"[AudioService] Synthesis error: {e}")
                 return None
+
+    def pregenerate_fillers(self):
+        """Pre-generates filler audio files to be played while thinking, caching them permanently."""
+        self.filler_phrases = [
+            ("[hmm] Hmm... let me think.", "filler_0.wav"),
+            ("[hmm] Just a moment.", "filler_1.wav"),
+            ("[hmm] Let's see...", "filler_2.wav"),
+            ("Thinking...", "filler_3.wav")
+        ]
+        self.filler_urls = []
+        for text, filename in self.filler_phrases:
+            filepath = os.path.join(self.cache_dir, filename)
+            url = f"http://{self.host_ip}:{self.port}/{filename}"
+            self.filler_urls.append((url, text))
+            
+            if not os.path.exists(filepath):
+                print(f"[AudioService] Generating cache for: {filename}")
+                # temporarily override wav_path to synthesize into filepath
+                old_path = self.wav_path
+                old_filename = self.wav_filename
+                self.wav_path = filepath
+                self.wav_filename = filename
+                try:
+                    self.synthesize(text, play_pc=False)
+                finally:
+                    self.wav_path = old_path
+                    self.wav_filename = old_filename
+        print("[AudioService] All filler phrases cached and ready.")
+
+    def get_random_filler(self):
+        """Returns a random (url, text) tuple from the pre-generated fillers."""
+        import random
+        if getattr(self, 'filler_urls', None):
+            return random.choice(self.filler_urls)
+        return None, None
 
     def stop(self):
         """Stops the audio HTTP server."""

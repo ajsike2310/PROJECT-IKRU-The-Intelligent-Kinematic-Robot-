@@ -1,503 +1,1110 @@
-// PROJECT IKRU — Companion Studio Dashboard Logic
+/**
+ * PROJECT IKRU — Professional Companion UI Controller
+ * Handles boot sequence animation timing, real-time WebSocket telemetry,
+ * kinematic motor actuation, simulated OLED eye rendering, and Chatterbox TTS.
+ */
 
-let currentMode = "wifi";
-let isAssistantRunning = false;
-let logPollInterval = null;
+// Application Configuration
+let currentRobotIp = "192.168.1.42";
+let currentCamIp = "192.168.4.1";
+let nudgeDuration = 0.5;
+let activeEmotion = "happy";
+let emotionTimerId = null;
 
-document.addEventListener("DOMContentLoaded", () => {
-  fetchStatus();
-  fetchWifiConfig();
-  fetchComPorts();
-  setInterval(fetchStatus, 3000);
-});
+// ============================================================
+// 1. BOOT SEQUENCE CONTROLLER (~1.4s)
+// ============================================================
+function runBootSequence() {
+  document.body.classList.remove("boot-complete");
+  document.body.classList.add("loading");
 
-// Mode Switching: Home Wi-Fi vs Portable AP
-function setMode(mode) {
-  currentMode = mode;
-  const btnWifi = document.getElementById("btnModeWifi");
-  const btnAP = document.getElementById("btnModeAP");
-  const inputRobot = document.getElementById("inputRobotIp");
-  const inputCam = document.getElementById("inputCamIp");
-
-  if (mode === "wifi") {
-    btnWifi.classList.add("active");
-    btnAP.classList.remove("active");
-    inputRobot.value = "192.168.1.34";
-    inputCam.value = "192.168.4.1";
-  } else {
-    btnAP.classList.add("active");
-    btnWifi.classList.remove("active");
-    inputRobot.value = "192.168.4.2";
-    inputCam.value = "192.168.4.1";
+  const bootStatusText = document.querySelector("#bootStatus .status-text");
+  if (bootStatusText) {
+    bootStatusText.textContent = "INITIALIZING KINEMATICS...";
   }
-  fetchStatus();
+
+  // Stage 1 -> Stage 2: Words Assembly & Subsystem Check (~0.7s)
+  setTimeout(() => {
+    if (bootStatusText) {
+      bootStatusText.textContent = "MOUNTING ESP32 HARDWARE...";
+    }
+  }, 700);
+
+  // Stage 2 -> Stage 3: Eye Wake & Ready Beacon (~1.2s)
+  setTimeout(() => {
+    if (bootStatusText) {
+      bootStatusText.textContent = "SYSTEM READY // ONLINE";
+    }
+  }, 1200);
+
+  // Dissolve to Main Dashboard (~1.45s)
+  setTimeout(() => {
+    document.body.classList.remove("loading");
+    document.body.classList.add("boot-complete");
+    appendLog("[BOOT] Boot sequence complete. Kinematic kernel active.", "sys");
+  }, 1450);
 }
 
-// Fetch Diagnostics & Health Status
+function replayBootSequence() {
+  appendLog("[SYSTEM] Reboot requested by operator.", "sys");
+  runBootSequence();
+}
+
+// ============================================================
+// 2. NETWORK TELEMETRY & STATUS POLLING
+// ============================================================
 async function fetchStatus() {
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  const camIp = document.getElementById("inputCamIp").value.trim();
+  const t0 = performance.now();
+  try {
+    const res = await fetch(`/api/status?ip=${encodeURIComponent(currentRobotIp)}`, { cache: "no-store" });
+    const latency = Math.round(performance.now() - t0);
+
+    if (res.ok) {
+      const data = await res.json();
+      updateConnectionStatus(data.status === "online", latency);
+    } else {
+      updateConnectionStatus(false, latency);
+    }
+  } catch (err) {
+    updateConnectionStatus(false, 0);
+  }
+}
+
+function updateConnectionStatus(isOnline, latency) {
+  const pill = document.getElementById("connPill");
+  const text = document.getElementById("connText");
+  const displayIp = document.getElementById("displayRobotIp");
+  const barPing = document.getElementById("barPingText");
+
+  displayIp.textContent = `${currentRobotIp}:81`;
+
+  if (isOnline) {
+    pill.classList.remove("offline");
+    pill.classList.add("online");
+    text.textContent = "ROBOT ONLINE";
+    barPing.textContent = `PING: ${latency}ms`;
+  } else {
+    pill.classList.remove("online");
+    pill.classList.add("offline");
+    text.textContent = "STANDBY / RECONNECTING";
+    barPing.textContent = `PING: --`;
+  }
+}
+
+// ============================================================
+// 3. KINEMATICS & MOTOR ACTUATION
+// ============================================================
+async function sendMovement(direction, customDuration = null) {
+  const dur = customDuration !== null ? customDuration : nudgeDuration;
+  let cmd = `MOVE:${direction.toUpperCase()}:${dur}`;
+  if (direction === "stop") cmd = "STOP";
+  if (direction === "dance") cmd = "DANCE";
+  if (direction === "sing") cmd = "SING";
+
+  appendLog(`[DRV8833] ${cmd}`, "info");
 
   try {
-    const res = await fetch(`/api/status?ip=${encodeURIComponent(robotIp)}&cam_ip=${encodeURIComponent(camIp)}`);
-    if (!res.ok) return;
+    const res = await fetch("/api/robot/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: currentRobotIp, command: cmd })
+    });
     const data = await res.json();
-
-    // 1. Robot Body Status
-    const pillRobot = document.getElementById("pillRobot");
-    const robotDetails = document.getElementById("robotDetails");
-    if (data.robot_connected) {
-      pillRobot.className = "status-pill online";
-      pillRobot.textContent = "Online";
-      robotDetails.textContent = `ws://${data.robot_ip}:81 (Connected)`;
-      if (data.robot_ip && data.robot_ip !== robotIp) {
-        document.getElementById("inputRobotIp").value = data.robot_ip;
-      }
-    } else {
-      pillRobot.className = "status-pill offline";
-      pillRobot.textContent = "Offline";
-      robotDetails.textContent = `ws://${data.robot_ip}:81 (Unreachable)`;
+    if (!data.success) {
+      appendLog(`[DRV8833 ERROR] ${data.error || "Execution failed"}`, "error");
     }
-
-    // 2. Ollama Status
-    const pillOllama = document.getElementById("pillOllama");
-    const ollamaDetails = document.getElementById("ollamaDetails");
-    if (data.ollama && data.ollama.running) {
-      if (data.ollama.has_qwen) {
-        pillOllama.className = "status-pill online";
-        pillOllama.textContent = "Ready";
-        ollamaDetails.textContent = "qwen2.5:3b available";
-      } else {
-        pillOllama.className = "status-pill pending";
-        pillOllama.textContent = "Model Missing";
-        ollamaDetails.textContent = "Run: ollama pull qwen2.5:3b";
-      }
-    } else {
-      pillOllama.className = "status-pill offline";
-      pillOllama.textContent = "Stopped";
-      ollamaDetails.textContent = "Run: ollama serve";
-    }
-
-    // 3. ESP32-CAM Status
-    const pillCam = document.getElementById("pillCam");
-    const camDetails = document.getElementById("camDetails");
-    if (data.cam_connected) {
-      pillCam.className = "status-pill online";
-      pillCam.textContent = "Connected";
-      camDetails.textContent = `UDP Stream @ ${data.cam_ip}:2222`;
-    } else {
-      pillCam.className = "status-pill pending";
-      pillCam.textContent = "No AP";
-      camDetails.textContent = `Connect Wi-Fi to IKRU-CAM`;
-    }
-
-    // 4. Audio Streaming Server
-    const audioDetails = document.getElementById("audioDetails");
-    audioDetails.textContent = `http://${data.local_ip}:8000/ (Active)`;
-
-    // 5. Global Header Pill
-    const globalDot = document.getElementById("globalStatusDot");
-    const globalText = document.getElementById("globalStatusText");
-    if (data.robot_connected) {
-      globalDot.className = "status-dot online";
-      globalText.textContent = `Robot Online (${data.robot_ip})`;
-    } else {
-      globalDot.className = "status-dot offline";
-      globalText.textContent = `Robot Offline (${data.robot_ip})`;
-    }
-
-    // 6. Assistant Running State
-    isAssistantRunning = data.assistant_running;
-    updateAssistantButtonState();
-
   } catch (err) {
-    console.error("Status check failed:", err);
+    appendLog(`[DRV8833 NET] Failed to dispatch: ${err.message}`, "error");
   }
 }
 
-// Auto-Scan Subnet for Robot
-async function scanNetwork() {
-  const btnScan = document.getElementById("btnScan");
-  const scanBtnText = document.getElementById("scanBtnText");
-  btnScan.disabled = true;
-  scanBtnText.textContent = "⏳ Scanning...";
+function updateNudgeDuration(val) {
+  nudgeDuration = parseFloat(val);
+  document.getElementById("nudgeSliderVal").textContent = `${nudgeDuration.toFixed(1)}s`;
+  document.getElementById("nudgeDurationLabel").textContent = `${nudgeDuration.toFixed(1)}s NUDGE`;
+}
 
+// Keyboard arrow navigation
+window.addEventListener("keydown", (e) => {
+  if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    highlightDpadBtn(".btn-up");
+    sendMovement("forward");
+  } else if (e.key === "ArrowDown") {
+    e.preventDefault();
+    highlightDpadBtn(".btn-down");
+    sendMovement("backward");
+  } else if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    highlightDpadBtn(".btn-left");
+    sendMovement("left");
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    highlightDpadBtn(".btn-right");
+    sendMovement("right");
+  } else if (e.key === " " || e.key === "Escape") {
+    e.preventDefault();
+    highlightDpadBtn(".btn-stop");
+    sendMovement("stop");
+  }
+});
+
+function highlightDpadBtn(selector) {
+  const btn = document.querySelector(selector);
+  if (btn) {
+    btn.classList.add("active-key");
+    setTimeout(() => btn.classList.remove("active-key"), 180);
+  }
+}
+
+// ============================================================
+// 4. OLED EYE EMULATOR & EXPRESSIONS PALETTE
+// ============================================================
+async function setEmotion(emotion, duration = 4.0) {
+  activeEmotion = emotion.toLowerCase();
+  const glass = document.getElementById("oledGlass");
+  const badge = document.getElementById("activeEmotionBadge");
+  const timer = document.getElementById("oledTimer");
+
+  // Remove previous emotion classes
+  glass.className = `oled-glass ${activeEmotion}`;
+  badge.textContent = activeEmotion.toUpperCase();
+
+  // Highlight active palette button
+  document.querySelectorAll(".emo-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.emo === activeEmotion);
+  });
+
+  appendLog(`[OLED] Emotion face set to [${activeEmotion.toUpperCase()}]`, "info");
+
+  // Send to physical robot
+  try {
+    fetch("/api/robot/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: currentRobotIp, command: `EMOTION:${activeEmotion}` })
+    });
+  } catch (err) {
+    console.error(err);
+  }
+
+  // Duration countdown timer
+  if (emotionTimerId) clearInterval(emotionTimerId);
+  let remaining = duration;
+  timer.textContent = `DURATION: ${remaining.toFixed(1)}s`;
+
+  emotionTimerId = setInterval(() => {
+    remaining -= 0.5;
+    if (remaining <= 0) {
+      clearInterval(emotionTimerId);
+      timer.textContent = "DURATION: STEADY";
+    } else {
+      timer.textContent = `DURATION: ${remaining.toFixed(1)}s`;
+    }
+  }, 500);
+}
+
+// ============================================================
+// 5. NEURAL VOICE & PARALINGUISTIC SOUND TAGS
+// ============================================================
+function insertVocalTag(tag) {
+  const textarea = document.getElementById("ttsTextInput");
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const text = textarea.value;
+
+  textarea.value = text.substring(0, start) + ` ${tag} ` + text.substring(end);
+  textarea.focus();
+  textarea.selectionStart = textarea.selectionEnd = start + tag.length + 2;
+  appendLog(`[VOICE] Injected paralinguistic sound token: ${tag}`, "sys");
+}
+
+async function synthesizeSpeech() {
+  const textInput = document.getElementById("ttsTextInput");
+  const text = textInput.value.trim();
+  if (!text) return;
+
+  const playPc = document.getElementById("chkPlayPC").checked;
+  const streamRobot = document.getElementById("chkStreamRobot").checked;
+  const btnSpeak = document.getElementById("btnSpeak");
+  const voiceBadge = document.getElementById("voiceStatusBadge");
+
+  btnSpeak.disabled = true;
+  btnSpeak.innerHTML = `<span>SYNTHESIZING...</span>`;
+  voiceBadge.textContent = "GENERATING...";
+  appendLog(`[TTS] Synthesizing: "${text}"`, "info");
+
+  try {
+    const res = await fetch("/api/audio/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: text,
+        ip: currentRobotIp,
+        play_pc: playPc,
+        stream_robot: streamRobot
+      })
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      appendLog(`[TTS OK] Synthesized ${data.duration.toFixed(2)}s audio stream.`, "success");
+      voiceBadge.textContent = `PLAYING (${data.duration.toFixed(1)}s)`;
+      setTimeout(() => {
+        voiceBadge.textContent = "44.1kHz PCM";
+      }, (data.duration || 3) * 1000);
+    } else {
+      appendLog(`[TTS ERROR] ${data.error || "Failed"}`, "error");
+      voiceBadge.textContent = "ERR";
+    }
+  } catch (err) {
+    appendLog(`[TTS NET] Error: ${err.message}`, "error");
+  } finally {
+    btnSpeak.disabled = false;
+    btnSpeak.innerHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+      <span>SYNTHESIZE & SPEAK</span>
+    `;
+  }
+}
+
+// ============================================================
+// 6. TELEMETRY EVENT LOG STREAM
+// ============================================================
+function appendLog(message, type = "normal") {
+  const box = document.getElementById("logStreamBox");
+  if (!box) return;
+
+  const now = new Date();
+  const timeStr = now.toTimeString().split(" ")[0];
+  const div = document.createElement("div");
+  div.className = `log-entry ${type}`;
+  div.textContent = `[${timeStr}] ${message}`;
+
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function clearTelemetryLog() {
+  const box = document.getElementById("logStreamBox");
+  if (box) {
+    box.innerHTML = `<div class="log-entry sys">[SYSTEM] Log stream cleared.</div>`;
+  }
+}
+
+// ============================================================
+// 7. SETTINGS & PROVISIONING MODAL
+// ============================================================
+function toggleSettingsModal() {
+  const modal = document.getElementById("settingsModal");
+  modal.classList.toggle("open");
+}
+
+function saveSettings() {
+  const newIp = document.getElementById("cfgRobotIp").value.trim();
+  const newCam = document.getElementById("cfgCamIp").value.trim();
+  if (newIp) currentRobotIp = newIp;
+  if (newCam) currentCamIp = newCam;
+
+  toggleSettingsModal();
+  appendLog(`[CONFIG] Applied settings: Robot=${currentRobotIp}, Cam=${currentCamIp}`, "sys");
+  fetchStatus();
+}
+
+async function scanNetworkNodes() {
+  appendLog("[SCAN] Probing subnet for robot nodes...", "sys");
   try {
     const res = await fetch("/api/scan");
     const data = await res.json();
-    if (data.found_robots && data.found_robots.length > 0) {
-      const detectedIp = data.found_robots[0];
-      document.getElementById("inputRobotIp").value = detectedIp;
-      appendLog(`[Auto-Scan] Discovered ESP32 Robot at: ${detectedIp}`);
-      fetchStatus();
+    if (data.nodes && data.nodes.length > 0) {
+      appendLog(`[SCAN] Discovered ${data.nodes.length} nodes on subnet.`, "success");
+      data.nodes.forEach(n => appendLog(` - ${n.type} at ${n.ip}:${n.port}`, "success"));
     } else {
-      appendLog(`[Auto-Scan] No robot detected on port 81. Make sure ESP32 is powered on.`);
+      appendLog("[SCAN] No active nodes discovered.", "info");
     }
   } catch (err) {
-    appendLog(`[Auto-Scan Error] ${err.message}`);
+    appendLog(`[SCAN ERR] ${err.message}`, "error");
+  }
+}
+
+async function provisionWiFi() {
+  const ssid = document.getElementById("cfgSsid").value.trim();
+  const pass = document.getElementById("cfgPass").value.trim();
+  if (!ssid) {
+    alert("Please enter a Wi-Fi SSID");
+    return;
+  }
+
+  appendLog(`[WIFI] Provisioning credentials for SSID: ${ssid}...`, "sys");
+  try {
+    const res = await fetch("/api/robot/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: currentRobotIp, command: `SET_WIFI:${ssid}:${pass}` })
+    });
+    const data = await res.json();
+    if (data.success) {
+      appendLog("[WIFI] Credentials sent. ESP32 switching network...", "success");
+    }
+  } catch (err) {
+    appendLog(`[WIFI ERR] ${err.message}`, "error");
+  }
+}
+
+// ============================================================
+// 8. CONVERSATIONAL COMPANION // TALK TO IKRU
+// ============================================================
+let speechRecognitionInstance = null;
+let isListening = false;
+
+function sendQuickPrompt(promptText) {
+  const input = document.getElementById("chatTextInput");
+  input.value = promptText;
+  sendChatMessage();
+}
+
+async function clearChatHistory() {
+  try {
+    const res = await fetch("/api/chat/clear", { method: "POST" });
+    const data = await res.json();
+    if (data.success) {
+      const transcript = document.getElementById("chatTranscriptBox");
+      if (transcript) {
+        transcript.innerHTML = `
+          <div class="chat-msg assistant">
+            <div class="chat-sender">
+              <span class="sender-name">IKRU</span>
+              <span class="emo-tag">[GLEE]</span>
+            </div>
+            <div class="chat-bubble">
+              Memory reset! I am ready for new questions and commands.
+            </div>
+          </div>
+        `;
+      }
+      appendLog("[CHAT] Conversation memory reset successfully.", "sys");
+    }
+  } catch (err) {
+    appendLog(`[CHAT ERR] Could not clear memory: ${err.message}`, "error");
+  }
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById("chatTextInput");
+  const prompt = input.value.trim();
+  if (!prompt) return;
+
+  const btnSend = document.getElementById("btnSendChat");
+  const statusBadge = document.getElementById("chatEngineStatus");
+  const statusText = document.getElementById("chatStatusText");
+  const streamRobot = document.getElementById("chkChatStreamRobot").checked;
+  const playPc = document.getElementById("chkChatPlayPC").checked;
+  const engineRadio = document.querySelector('input[name="chatTtsEngine"]:checked');
+  const ttsEngine = engineRadio ? engineRadio.value : "edge";
+
+  // Append user bubble
+  appendChatBubble("user", "YOU", prompt);
+  input.value = "";
+  btnSend.disabled = true;
+
+  const isVisual = ["see", "look", "watch", "camera", "view", "show", "color", "wearing"].some(kw => prompt.toLowerCase().includes(kw));
+  if (isVisual) {
+    statusBadge.textContent = "VLM VISION...";
+    statusText.textContent = "ANALYZING SCENE...";
+  } else {
+    statusBadge.textContent = "THINKING...";
+    statusText.textContent = ttsEngine === "chatterbox" ? "AI & NEURAL VOICE..." : "AI GENERATING...";
+  }
+  appendLog(`[CHAT] User: "${prompt}" [Engine: ${ttsEngine}]`, "info");
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: prompt,
+        ip: currentRobotIp,
+        play_pc: playPc,
+        stream_robot: streamRobot,
+        engine: ttsEngine
+      })
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      // Find primary emotion from segments or response
+      let emo = "happy";
+      if (data.segments && data.segments.length > 0) {
+        emo = data.segments[0][0] || "happy";
+      }
+
+      const speechDuration = Number(data.duration) || 2.5;
+
+      // Update OLED face emulator on UI
+      setEmotion(emo, Math.max(3.0, speechDuration));
+
+      // Append assistant bubble
+      appendChatBubble("assistant", "IKRU", data.response, emo);
+
+      // Play synthesized audio directly in browser if PC speaker enabled
+      if (playPc && data.audio_url) {
+        try {
+          const browserAudio = new Audio(`${data.audio_url}?t=${Date.now()}`);
+          browserAudio.play().catch(e => {
+            console.warn("[Audio] Browser autoplay policy notice:", e);
+          });
+        } catch (audioErr) {
+          console.warn("[Audio] HTML5 audio error:", audioErr);
+        }
+      }
+
+      // Display visual scene observation if VLM was triggered
+      if (data.visual_context) {
+        const obsElem = document.getElementById("cameraObsText");
+        if (obsElem) obsElem.textContent = `"${data.visual_context}"`;
+        appendLog(`[VLM SCENE] "${data.visual_context}"`, "sys");
+      }
+
+      // Tool call logging
+      if (data.tools && data.tools.length > 0) {
+        data.tools.forEach(t => {
+          appendLog(`[TOOL CALL] Executed ${t.tool}(${JSON.stringify(t.parameters || {})})`, "sys");
+        });
+      }
+
+      statusBadge.textContent = "OLLAMA // READY";
+      statusText.textContent = `SPEAKING (${speechDuration.toFixed(1)}s)`;
+      setTimeout(() => {
+        statusText.textContent = "IDLE";
+      }, (speechDuration + 0.5) * 1000);
+      appendLog(`[CHAT] Ikru: "${data.response}"`, "success");
+    } else {
+      appendChatBubble("assistant", "SYSTEM", `Error: ${data.error || "Generation failed"}`);
+      statusBadge.textContent = "ERROR";
+      statusText.textContent = "FAILED";
+      appendLog(`[CHAT ERR] ${data.error || "Failed"}`, "error");
+    }
+  } catch (err) {
+    appendChatBubble("assistant", "SYSTEM", `Network error: ${err.message}`);
+    statusBadge.textContent = "OFFLINE";
+    statusText.textContent = "NET ERROR";
+    appendLog(`[CHAT NET] ${err.message}`, "error");
   } finally {
-    btnScan.disabled = false;
-    scanBtnText.textContent = "🔍 Auto-Scan";
+    btnSend.disabled = false;
   }
 }
 
-// Test Emotion
-async function testEmotion(emotion) {
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  appendLog(`[Test] Setting OLED emotion: ${emotion}`);
+function appendChatBubble(role, senderName, text, emotionTag = null) {
+  const transcript = document.getElementById("chatTranscriptBox");
+  if (!transcript) return;
+
+  const msgDiv = document.createElement("div");
+  msgDiv.className = `chat-msg ${role}`;
+
+  const senderDiv = document.createElement("div");
+  senderDiv.className = "chat-sender";
+
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "sender-name";
+  nameSpan.textContent = senderName;
+  senderDiv.appendChild(nameSpan);
+
+  if (emotionTag) {
+    const emoSpan = document.createElement("span");
+    emoSpan.className = "emo-tag";
+    emoSpan.textContent = `[${emotionTag.toUpperCase()}]`;
+    senderDiv.appendChild(emoSpan);
+  }
+
+  const bubbleDiv = document.createElement("div");
+  bubbleDiv.className = "chat-bubble";
+  bubbleDiv.textContent = text;
+
+  msgDiv.appendChild(senderDiv);
+  msgDiv.appendChild(bubbleDiv);
+
+  transcript.appendChild(msgDiv);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function toggleVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert("Web Speech API is not supported in this browser. Please use Google Chrome or Microsoft Edge for voice input.");
+    appendLog("[MIC] Web Speech API not supported in this browser.", "error");
+    return;
+  }
+
+  const btnMic = document.getElementById("btnMic");
+  const statusText = document.getElementById("chatStatusText");
+
+  if (isListening && speechRecognitionInstance) {
+    speechRecognitionInstance.stop();
+    return;
+  }
+
   try {
-    const res = await fetch("/api/test/emotion", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: robotIp, emotion })
-    });
-    const data = await res.json();
-    if (data.status === "ok") {
-      if (data.resolved_ip && data.resolved_ip !== robotIp) {
-        document.getElementById("inputRobotIp").value = data.resolved_ip;
-        appendLog(`[Auto-Resolved] Connected to active robot at ${data.resolved_ip}`);
-        fetchStatus();
-      }
-      appendLog(`[Test] OLED updated to: ${emotion}`);
-    } else {
-      appendLog(`[Test Error] ${data.message}`);
-    }
+    speechRecognitionInstance = new SpeechRecognition();
+    speechRecognitionInstance.continuous = false;
+    speechRecognitionInstance.interimResults = false;
+    speechRecognitionInstance.lang = "en-US";
+
+    speechRecognitionInstance.onstart = () => {
+      isListening = true;
+      btnMic.classList.add("listening");
+      statusText.textContent = "LISTENING...";
+      appendLog("[MIC] Microphone listening... Speak your command or question.", "sys");
+    };
+
+    speechRecognitionInstance.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      appendLog(`[MIC] Heard: "${transcript}"`, "info");
+      document.getElementById("chatTextInput").value = transcript;
+      sendChatMessage();
+    };
+
+    speechRecognitionInstance.onerror = (event) => {
+      console.warn("[MIC] Speech recognition error:", event.error);
+      appendLog(`[MIC ERROR] ${event.error}`, "error");
+      stopVoiceInputState();
+    };
+
+    speechRecognitionInstance.onend = () => {
+      stopVoiceInputState();
+    };
+
+    speechRecognitionInstance.start();
   } catch (err) {
-    appendLog(`[Test Error] Could not reach robot at ${robotIp}: ${err.message}`);
+    console.error(err);
+    stopVoiceInputState();
   }
 }
 
-// Test Motor Move
-async function testMove(action) {
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  appendLog(`[Test] Motor action: ${action}`);
-  try {
-    const res = await fetch("/api/test/move", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: robotIp, action, duration: 0.5 })
-    });
-    const data = await res.json();
-    if (data.status === "ok") {
-      if (data.resolved_ip && data.resolved_ip !== robotIp) {
-        document.getElementById("inputRobotIp").value = data.resolved_ip;
-        appendLog(`[Auto-Resolved] Connected to active robot at ${data.resolved_ip}`);
-        fetchStatus();
-      }
-      appendLog(`[Test] Executed motor action: ${action}`);
-    }
-  } catch (err) {
-    appendLog(`[Test Error] Motor error: ${err.message}`);
+function stopVoiceInputState() {
+  isListening = false;
+  const btnMic = document.getElementById("btnMic");
+  if (btnMic) btnMic.classList.remove("listening");
+  const statusText = document.getElementById("chatStatusText");
+  if (statusText && statusText.textContent === "LISTENING...") {
+    statusText.textContent = "IDLE";
   }
 }
 
-// Test Speech
-async function testSpeech() {
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  const text = document.getElementById("inputSpeakText").value.trim();
-  const voice = document.getElementById("selectVoice").value;
-  const playPc = document.getElementById("checkTestPcAudio").checked;
+// ============================================================
+// 9. MASTER VOLUME CONTROL
+// ============================================================
+let lastNonZeroVolume = 100;
+let volumeDebounceTimer = null;
 
-  if (!text) return;
+function setVolume(val) {
+  const vol = parseInt(val, 10);
+  const slider = document.getElementById("masterVolSlider");
+  const label = document.getElementById("masterVolVal");
+  const icon = document.getElementById("volMuteIcon");
 
-  appendLog(`[Speech Test] Synthesizing ("${voice}"${playPc ? " + PC speaker" : " [Robot Only]"}): "${text}"...`);
-  try {
-    const res = await fetch("/api/test/speak", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: robotIp, text, voice, play_pc: playPc })
-    });
-    const data = await res.json();
-    if (data.status === "ok") {
-      if (data.resolved_ip && data.resolved_ip !== robotIp) {
-        document.getElementById("inputRobotIp").value = data.resolved_ip;
-        appendLog(`[Auto-Resolved] Connected to active robot at ${data.resolved_ip}`);
-        fetchStatus();
-      }
-      appendLog(`[Speech Test] Audio streamed to robot: ${data.url} (${data.duration.toFixed(2)}s)`);
-    } else {
-      appendLog(`[Speech Error] ${data.message}`);
-    }
-  } catch (err) {
-    appendLog(`[Speech Error] ${err.message}`);
+  if (slider) slider.value = vol;
+  if (label) label.textContent = `${vol}%`;
+
+  if (icon) {
+    if (vol === 0) icon.textContent = "🔇";
+    else if (vol < 40) icon.textContent = "🔉";
+    else icon.textContent = "🔊";
   }
-}
 
-// Toggle Assistant Run / Stop
-async function toggleAssistant() {
-  const btnLaunch = document.getElementById("btnLaunch");
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  const camIp = document.getElementById("inputCamIp").value.trim();
-  const playPc = document.getElementById("checkLaunchPcAudio").checked;
-  const noMic = document.getElementById("checkLaunchNoMic").checked;
-  const noVision = document.getElementById("checkLaunchNoVision").checked;
+  if (vol > 0) lastNonZeroVolume = vol;
 
-  if (!isAssistantRunning) {
-    // START
-    appendLog(`[Launcher] Starting IKRU Assistant with Target IP: ${robotIp}...`);
+  if (volumeDebounceTimer) clearTimeout(volumeDebounceTimer);
+  volumeDebounceTimer = setTimeout(async () => {
     try {
-      const res = await fetch("/api/assistant/start", {
+      await fetch("/api/audio/volume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ip: robotIp,
-          cam_ip: camIp,
-          play_pc: playPc,
-          no_mic: noMic,
-          no_vision: noVision
-        })
+        body: JSON.stringify({ volume: vol })
       });
-      const data = await res.json();
-      if (data.status === "started" || data.status === "already_running") {
-        isAssistantRunning = true;
-        updateAssistantButtonState();
-        startLogPolling();
-      }
+      appendLog(`[VOLUME] Master Volume set to ${vol}%`, "info");
     } catch (err) {
-      appendLog(`[Launcher Error] Could not start: ${err.message}`);
+      console.warn("Volume set error:", err);
     }
+  }, 120);
+}
+
+function toggleMute() {
+  const slider = document.getElementById("masterVolSlider");
+  if (!slider) return;
+  const current = parseInt(slider.value, 10);
+  if (current > 0) {
+    setVolume(0);
   } else {
-    // STOP
-    appendLog(`[Launcher] Stopping assistant...`);
-    try {
-      await fetch("/api/assistant/stop", { method: "POST" });
-      isAssistantRunning = false;
-      updateAssistantButtonState();
-    } catch (err) {
-      appendLog(`[Launcher Error] ${err.message}`);
-    }
+    setVolume(lastNonZeroVolume || 100);
   }
 }
 
-function updateAssistantButtonState() {
-  const btnLaunch = document.getElementById("btnLaunch");
-  const launchBtnIcon = document.getElementById("launchBtnIcon");
-  const launchBtnText = document.getElementById("launchBtnText");
-  const pillAssistant = document.getElementById("pillAssistant");
+// ============================================================
+// 10. WI-FI & NETWORK PROVISIONING
+// ============================================================
 
-  if (isAssistantRunning) {
-    btnLaunch.className = "btn btn-launch running";
-    launchBtnIcon.textContent = "⏹";
-    launchBtnText.textContent = "Stop AI Assistant";
-    pillAssistant.className = "status-pill online";
-    pillAssistant.textContent = "Active";
-    startLogPolling();
-  } else {
-    btnLaunch.className = "btn btn-launch";
-    launchBtnIcon.textContent = "🚀";
-    launchBtnText.textContent = "Start AI Assistant";
-    pillAssistant.className = "status-pill offline";
-    pillAssistant.textContent = "Stopped";
+async function refreshNetworkInfo() {
+  const btn = document.getElementById("btnRefreshNet");
+  if (btn) { btn.disabled = true; btn.querySelector("span").textContent = "LOADING..."; }
+
+  try {
+    const res = await fetch(`/api/network/info?ip=${encodeURIComponent(currentRobotIp)}&cam=${encodeURIComponent(currentCamIp)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+
+    // SSID + signal
+    const ssidEl   = document.getElementById("netSsid");
+    const sigEl    = document.getElementById("netSignal");
+    const srvEl    = document.getElementById("netServerIp");
+    const gwEl     = document.getElementById("netGateway");
+    const rIpEl    = document.getElementById("netRobotIp");
+    const cIpEl    = document.getElementById("netCamIp");
+    const rDot     = document.getElementById("netRobotDot");
+    const cDot     = document.getElementById("netCamDot");
+    const badge    = document.getElementById("wifiStatusBadge");
+
+    if (ssidEl)  ssidEl.textContent  = d.wifi_ssid  || "—";
+    if (sigEl)   sigEl.textContent   = d.wifi_signal || "—";
+    if (srvEl)   srvEl.textContent   = d.server_ip  || "—";
+    if (gwEl)    gwEl.textContent    = d.gateway    || "—";
+    if (rIpEl)   rIpEl.textContent   = d.robot_ip   || currentRobotIp;
+    if (cIpEl)   cIpEl.textContent   = d.cam_ip     || currentCamIp;
+
+    // Reachability dots
+    if (rDot) { rDot.className = "net-reach-dot " + (d.robot_online ? "online" : "offline"); }
+    if (cDot) { cDot.className = "net-reach-dot " + (d.cam_online   ? "online" : "offline"); }
+
+    // Signal color
+    if (sigEl) {
+      const sig = parseInt(d.wifi_signal);
+      sigEl.style.color = sig >= 70 ? "#22c55e" : sig >= 40 ? "#f59e0b" : "#ef4444";
+    }
+
+    // Badge
+    if (badge) {
+      badge.textContent  = d.wifi_connected ? "CONNECTED" : "DISCONNECTED";
+      badge.className    = "card-status-badge " + (d.wifi_connected ? "active" : "offline");
+    }
+
+    // Auto-fill SSID input if empty
+    const ssidInput = document.getElementById("wifiSsidInput");
+    if (ssidInput && !ssidInput.value && d.wifi_ssid && d.wifi_ssid !== "unknown") {
+      ssidInput.value = d.wifi_ssid;
+    }
+
+    appendLog(`[NET] Server: ${d.server_ip} | SSID: ${d.wifi_ssid} | Signal: ${d.wifi_signal} | Robot: ${d.robot_online ? "ONLINE" : "OFFLINE"}`, "sys");
+  } catch (err) {
+    appendLog(`[NET ERR] ${err.message}`, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.querySelector("span").textContent = "REFRESH"; }
   }
 }
 
-function startLogPolling() {
-  if (logPollInterval) return;
-  logPollInterval = setInterval(async () => {
-    try {
-      const res = await fetch("/api/assistant/logs");
-      const data = await res.json();
-      if (data.logs && data.logs.length > 0) {
-        renderLogs(data.logs);
-      }
-      if (!data.running && isAssistantRunning) {
-        isAssistantRunning = false;
-        updateAssistantButtonState();
-        clearInterval(logPollInterval);
-        logPollInterval = null;
-      }
-    } catch (err) {
-      // Ignore polling errors
+async function scanWiFiNetworks() {
+
+  const badge = document.getElementById("wifiStatusBadge");
+  badge.textContent = "SCANNING...";
+  appendLog("[WIFI] Scanning nearby Wi-Fi SSIDs...", "sys");
+
+  try {
+    const res = await fetch("/api/wifi/scan");
+    const data = await res.json();
+    if (data.success && data.networks && data.networks.length > 0) {
+      const datalist = document.getElementById("wifiNetworkList");
+      datalist.innerHTML = "";
+      data.networks.forEach(net => {
+        const opt = document.createElement("option");
+        opt.value = net.ssid;
+        opt.label = `${net.ssid} (${net.signal})`;
+        datalist.appendChild(opt);
+      });
+      appendLog(`[WIFI] Found ${data.networks.length} networks.`, "success");
+      badge.textContent = "READY";
+    } else {
+      appendLog("[WIFI] No networks found via scan.", "info");
+      badge.textContent = "READY";
     }
-  }, 1000);
+  } catch (err) {
+    appendLog(`[WIFI SCAN ERR] ${err.message}`, "error");
+    badge.textContent = "ERR";
+  }
 }
 
-function renderLogs(logs) {
-  const terminal = document.getElementById("terminalOutput");
-  terminal.innerHTML = "";
-  logs.forEach(line => {
-    const div = document.createElement("div");
-    div.className = "log-line";
-    div.textContent = line;
-    terminal.appendChild(div);
-  });
-  terminal.scrollTop = terminal.scrollHeight;
-}
-
-function appendLog(line) {
-  const terminal = document.getElementById("terminalOutput");
-  const div = document.createElement("div");
-  div.className = "log-line";
-  div.textContent = line;
-  terminal.appendChild(div);
-  terminal.scrollTop = terminal.scrollHeight;
-}
-
-function clearLogs() {
-  document.getElementById("terminalOutput").innerHTML = "";
-}
-
-// ============================================================
-// WI-FI PROVISIONING & SERIAL UTILITIES
-// ============================================================
-
-let wifiPanelVisible = true;
-function toggleWifiPanel() {
-  const panel = document.getElementById("wifiProvisionPanel");
-  const btn = document.getElementById("btnToggleWifiPanel");
-  wifiPanelVisible = !wifiPanelVisible;
-  panel.style.display = wifiPanelVisible ? "flex" : "none";
-  btn.textContent = wifiPanelVisible ? "📶 Wi-Fi Provisioning & Credentials ▲" : "📶 Wi-Fi Provisioning & Credentials ▼";
-}
-
-function togglePasswordVisibility(inputId) {
-  const input = document.getElementById(inputId);
+function togglePassVisibility() {
+  const input = document.getElementById("wifiPassInput");
   if (!input) return;
   input.type = input.type === "password" ? "text" : "password";
 }
 
-async function fetchWifiConfig() {
+async function applyWiFiCredentials() {
+  const ssid = document.getElementById("wifiSsidInput").value.trim();
+  const pass = document.getElementById("wifiPassInput").value.trim();
+  const methodRadio = document.querySelector('input[name="wifiMethod"]:checked');
+  const method = methodRadio ? methodRadio.value : "auto";
+  const btn = document.getElementById("btnConnectWiFi");
+  const badge = document.getElementById("wifiStatusBadge");
+
+  if (!ssid) {
+    alert("Please enter a Wi-Fi SSID");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = `<span>CONNECTING...</span>`;
+  badge.textContent = "CONNECTING...";
+  appendLog(`[WIFI] Provisioning SSID "${ssid}" via ${method.toUpperCase()}...`, "info");
+
   try {
-    const res = await fetch("/api/wifi/config");
-    if (!res.ok) return;
+    const res = await fetch("/api/wifi/configure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ssid: ssid,
+        password: pass,
+        method: method,
+        ip: currentRobotIp
+      })
+    });
+
     const data = await res.json();
-    if (data.ssid) {
-      document.getElementById("inputWifiSsid").value = data.ssid;
-      const badge = document.getElementById("badgeCurrentFirmwareSsid");
-      if (badge) badge.textContent = `Firmware Default: ${data.ssid}`;
-    }
-    if (data.pass) {
-      document.getElementById("inputWifiPass").value = data.pass;
+    if (data.success) {
+      appendLog(`[WIFI OK] ${data.message || "Credentials dispatched successfully"}`, "success");
+      badge.textContent = "CONNECTED";
+      setTimeout(() => { badge.textContent = "READY"; }, 4000);
+    } else {
+      appendLog(`[WIFI ERROR] ${data.error || "Configuration failed"}`, "error");
+      badge.textContent = "ERR";
     }
   } catch (err) {
-    console.error("Failed to load firmware wifi config:", err);
+    appendLog(`[WIFI NET ERR] ${err.message}`, "error");
+    badge.textContent = "NET ERR";
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+      <span>CONNECT IKRU TO WI-FI</span>
+    `;
   }
 }
 
-async function fetchComPorts() {
-  const select = document.getElementById("selectComPort");
-  if (!select) return;
-  select.innerHTML = '<option value="">Scanning...</option>';
+// ============================================================
+// 11. CHATTERBOX ZERO-SHOT VOICE CLONING STUDIO
+// ============================================================
+let currentAudioBase64 = null;
+let mediaRecorder = null;
+let recordedAudioChunks = [];
+
+function handleVoiceFileSelect(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    currentAudioBase64 = e.target.result;
+    const player = document.getElementById("cloneAudioPreview");
+    const previewBox = document.getElementById("audioPreviewBox");
+    const previewTitle = document.getElementById("previewTitle");
+    const nameInput = document.getElementById("cloneVoiceName");
+    const btnApply = document.getElementById("btnApplyClone");
+
+    player.src = currentAudioBase64;
+    previewBox.style.display = "block";
+    previewTitle.textContent = `File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+    if (!nameInput.value) {
+      nameInput.value = file.name.replace(/\.[^/.]+$/, "");
+    }
+    btnApply.disabled = false;
+    appendLog(`[CLONE] Loaded audio sample: ${file.name}`, "info");
+  };
+  reader.readAsDataURL(file);
+}
+
+async function toggleVoiceSampleRecord() {
+  const btn = document.getElementById("btnRecordSample");
+  const btnText = document.getElementById("btnRecordSampleText");
+  const recDot = document.getElementById("recDot");
+
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+    return;
+  }
+
   try {
-    const res = await fetch("/api/serial/ports");
-    const data = await res.json();
-    select.innerHTML = "";
-    if (data.ports && data.ports.length > 0) {
-      let defaultSelected = false;
-      data.ports.forEach(p => {
-        const opt = document.createElement("option");
-        opt.value = p.port;
-        opt.textContent = `${p.port} (${p.description})`;
-        // Prefer CH340 / CH9102 ESP32 body on COM7
-        if (!defaultSelected && (p.port === "COM7" || p.description.includes("CH9102") || p.description.includes("CH340"))) {
-          opt.selected = true;
-          defaultSelected = true;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedAudioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedAudioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      btn.classList.remove("recording");
+      btnText.textContent = "RECORD SAMPLE";
+
+      const audioBlob = new Blob(recordedAudioChunks, { type: "audio/wav" });
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        currentAudioBase64 = e.target.result;
+        const player = document.getElementById("cloneAudioPreview");
+        const previewBox = document.getElementById("audioPreviewBox");
+        const previewTitle = document.getElementById("previewTitle");
+        const nameInput = document.getElementById("cloneVoiceName");
+        const btnApply = document.getElementById("btnApplyClone");
+
+        player.src = currentAudioBase64;
+        previewBox.style.display = "block";
+        previewTitle.textContent = `Recorded Voice Sample (${(audioBlob.size / 1024).toFixed(1)} KB)`;
+        if (!nameInput.value) {
+          nameInput.value = `custom_voice_${Math.floor(Date.now() / 1000).toString().slice(-4)}`;
         }
-        select.appendChild(opt);
-      });
-      appendLog(`[Serial] Detected ${data.ports.length} COM port(s). Selected: ${select.value}`);
-    } else {
-      select.innerHTML = '<option value="">No COM ports detected</option>';
-      appendLog("[Serial] No COM ports found. Connect ESP32 via USB cable.");
-    }
+        btnApply.disabled = false;
+        appendLog(`[CLONE] Recorded voice sample (${(audioBlob.size / 1024).toFixed(1)} KB)`, "success");
+      };
+      reader.readAsDataURL(audioBlob);
+    };
+
+    mediaRecorder.start();
+    btn.classList.add("recording");
+    btnText.textContent = "STOP RECORDING";
+    appendLog("[CLONE] Recording reference voice... Speak for 5-15 seconds.", "sys");
   } catch (err) {
-    select.innerHTML = '<option value="">Failed to scan ports</option>';
-    appendLog(`[Serial Error] ${err.message}`);
+    alert("Microphone access is required to record a voice sample.");
+    appendLog(`[CLONE MIC ERR] ${err.message}`, "error");
   }
 }
 
-async function pushWifiActive() {
-  const robotIp = document.getElementById("inputRobotIp").value.trim();
-  const ssid = document.getElementById("inputWifiSsid").value.trim();
-  const pass = document.getElementById("inputWifiPass").value.trim();
-
-  if (!ssid) {
-    alert("Please enter a Wi-Fi SSID (network name).");
+async function saveAndApplyClonedVoice() {
+  if (!currentAudioBase64) {
+    alert("Please choose an audio file or record a sample first.");
     return;
   }
 
-  appendLog(`[Wi-Fi Provision] Pushing credentials for "${ssid}" to robot at ${robotIp}...`);
+  const nameInput = document.getElementById("cloneVoiceName");
+  const name = nameInput.value.trim() || "custom_voice";
+  const btn = document.getElementById("btnApplyClone");
+  const badge = document.getElementById("activeVoiceBadge");
+
+  btn.disabled = true;
+  btn.innerHTML = `<span>CLONING...</span>`;
+  badge.textContent = "CLONING...";
+  appendLog(`[CLONE] Conditioning Chatterbox with "${name}" reference audio...`, "info");
+
   try {
-    const res = await fetch("/api/robot/wifi", {
+    const res = await fetch("/api/voice/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: robotIp, ssid, pass })
+      body: JSON.stringify({
+        name: name,
+        audio_data: currentAudioBase64
+      })
     });
+
     const data = await res.json();
-    if (data.status === "ok") {
-      appendLog(`[Wi-Fi Provision] Success! Robot received new Wi-Fi and is reconnecting...`);
-      appendLog(`[Wi-Fi Provision] Robot will save credentials to flash (NVS) and display new IP on OLED.`);
-      setTimeout(scanNetwork, 4000);
+    if (data.success) {
+      appendLog(`[CLONE OK] Zero-shot voice profile "${name}" activated!`, "success");
+      badge.textContent = name.toUpperCase();
+      const topPill = document.getElementById("topVoiceEngineVal");
+      if (topPill) topPill.textContent = `CLONE: ${name.toUpperCase()}`;
+      fetchVoiceProfiles();
     } else {
-      appendLog(`[Wi-Fi Provision Error] ${data.message}`);
+      appendLog(`[CLONE ERR] ${data.error || "Cloning failed"}`, "error");
+      badge.textContent = "ERR";
     }
   } catch (err) {
-    appendLog(`[Wi-Fi Provision Error] ${err.message}`);
+    appendLog(`[CLONE NET ERR] ${err.message}`, "error");
+    badge.textContent = "NET ERR";
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<span>CLONE & ACTIVATE</span>`;
   }
 }
 
-async function pushWifiSerial() {
-  const port = document.getElementById("selectComPort").value;
-  const ssid = document.getElementById("inputWifiSsid").value.trim();
-  const pass = document.getElementById("inputWifiPass").value.trim();
-
-  if (!port) {
-    alert("Please select a valid COM port. Connect ESP32 via USB and click 🔄.");
-    return;
-  }
-  if (!ssid) {
-    alert("Please enter a Wi-Fi SSID.");
-    return;
-  }
-
-  appendLog(`[USB Serial] Sending Wi-Fi configuration for "${ssid}" to ${port}...`);
-  appendLog(`[USB Serial] (Note: Ensure Arduino Serial Monitor is closed so port is accessible)`);
+async function fetchVoiceProfiles() {
   try {
-    const res = await fetch("/api/serial/wifi", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port, ssid, pass })
-    });
+    const res = await fetch("/api/voice/list");
     const data = await res.json();
-    if (data.status === "ok") {
-      appendLog(`[USB Serial Success] ${data.message}`);
-      if (data.output && data.output.length > 0) {
-        data.output.forEach(line => appendLog(`  ESP32: ${line}`));
+    if (!data.success) return;
+
+    const list = document.getElementById("voiceProfilesList");
+    const activeBadge = document.getElementById("activeVoiceBadge");
+    const topPill = document.getElementById("topVoiceEngineVal");
+
+    if (list) {
+      list.innerHTML = "";
+
+      // Default Profile
+      const isDefaultActive = !data.active || data.active === "default";
+      const defaultDiv = document.createElement("div");
+      defaultDiv.className = `profile-item ${isDefaultActive ? "active" : ""}`;
+      defaultDiv.onclick = () => selectVoiceProfile("default");
+      defaultDiv.innerHTML = `
+        <span class="profile-name">Default Ikru (Neural)</span>
+        ${isDefaultActive ? '<span class="badge-active">ACTIVE</span>' : ""}
+      `;
+      list.appendChild(defaultDiv);
+
+      // Custom Profiles
+      if (data.voices && data.voices.length > 0) {
+        data.voices.forEach(v => {
+          const isActive = data.active === v.name;
+          const item = document.createElement("div");
+          item.className = `profile-item ${isActive ? "active" : ""}`;
+          item.onclick = () => selectVoiceProfile(v.name);
+          item.innerHTML = `
+            <span class="profile-name">${v.name}</span>
+            ${isActive ? '<span class="badge-active">ACTIVE</span>' : ""}
+          `;
+          list.appendChild(item);
+        });
       }
-      setTimeout(scanNetwork, 3000);
-    } else {
-      appendLog(`[USB Serial Error] ${data.message}`);
+    }
+
+    if (activeBadge) {
+      activeBadge.textContent = (data.active || "DEFAULT IKRU").toUpperCase();
+    }
+    if (topPill && data.active && data.active !== "default") {
+      topPill.textContent = `CLONE: ${data.active.toUpperCase()}`;
     }
   } catch (err) {
-    appendLog(`[USB Serial Error] ${err.message}`);
+    console.warn("fetchVoiceProfiles error:", err);
   }
 }
 
-async function saveFirmwareWifi() {
-  const ssid = document.getElementById("inputWifiSsid").value.trim();
-  const pass = document.getElementById("inputWifiPass").value.trim();
-
-  if (!ssid) {
-    alert("Please enter a Wi-Fi SSID.");
-    return;
-  }
-
-  appendLog(`[Firmware Config] Updating controller.ino default credentials to "${ssid}"...`);
+async function selectVoiceProfile(name) {
   try {
-    const res = await fetch("/api/wifi/config", {
+    const res = await fetch("/api/voice/select", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ssid, pass })
+      body: JSON.stringify({ name: name })
     });
     const data = await res.json();
-    if (data.status === "ok") {
-      const badge = document.getElementById("badgeCurrentFirmwareSsid");
-      if (badge) badge.textContent = `Firmware Default: ${ssid}`;
-      appendLog(`[Firmware Config] Successfully updated controller.ino! Re-flashing will now default to "${ssid}".`);
-    } else {
-      appendLog(`[Firmware Config Error] Failed to write controller.ino.`);
+    if (data.success) {
+      appendLog(`[VOICE] Switched active voice profile to: ${name}`, "success");
+      fetchVoiceProfiles();
     }
   } catch (err) {
-    appendLog(`[Firmware Config Error] ${err.message}`);
+    appendLog(`[VOICE ERR] ${err.message}`, "error");
   }
 }
+
+// ============================================================
+// 12. CAMERA STREAMING & TELEMETRY
+// ============================================================
+let cameraStreamActive = false;
+let cameraPollingInterval = null;
+
+function initCameraFeed() {
+  const img = document.getElementById("camStream");
+  if (!img) return;
+
+  img.src = `/api/camera/stream?t=${Date.now()}`;
+  cameraStreamActive = true;
+
+  img.onload = () => {
+    const badge = document.getElementById("camStatusBadge");
+    if (badge && !badge.classList.contains("live")) {
+      badge.className = "card-status-badge live";
+    }
+  };
+
+  img.onerror = () => {
+    if (cameraStreamActive) {
+      console.warn("[Camera] MJPEG stream dropped or unsupported, switching to snapshot polling mode");
+      cameraStreamActive = false;
+      startFramePollingMode(img);
+    }
+  };
+}
+
+function startFramePollingMode(img) {
+  if (cameraPollingInterval) clearInterval(cameraPollingInterval);
+  let inFlight = false;
+  cameraPollingInterval = setInterval(async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const res = await fetch(`/api/camera/frame?t=${Date.now()}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const oldSrc = img.src;
+        img.src = url;
+        if (oldSrc && oldSrc.startsWith("blob:")) {
+          setTimeout(() => URL.revokeObjectURL(oldSrc), 100);
+        }
+      }
+    } catch (err) {
+      console.debug("Camera poll frame error:", err);
+    } finally {
+      inFlight = false;
+    }
+  }, 40);
+}
+
+async function updateCameraStatus() {
+  try {
+    const res = await fetch("/api/camera/status");
+    const data = await res.json();
+    const badge = document.getElementById("camStatusBadge");
+    const telem = document.querySelector(".vf-telemetry.top-left");
+    if (badge) {
+      if (data.connected) {
+        badge.className = "card-status-badge live";
+        badge.textContent = `LIVE UDP (${data.fps} FPS)`;
+      } else {
+        badge.className = "card-status-badge";
+        badge.textContent = "STANDBY";
+      }
+    }
+    if (telem) {
+      telem.textContent = `FPS: ${data.fps} // CAM: ${data.cam_ip}`;
+    }
+  } catch (e) {}
+}
+
+async function triggerSceneObservation() {
+  const btn = document.getElementById("btnObserveScene");
+  const obsElem = document.getElementById("cameraObsText");
+  if (btn) {
+    btn.textContent = "👁️ OBSERVING...";
+    btn.disabled = true;
+  }
+  appendLog("[VLM] Capturing camera frame for Qwen-VL scene reasoning...", "sys");
+  try {
+    const res = await fetch("/api/vision/observe");
+    const data = await res.json();
+    if (data.success && data.observation) {
+      if (obsElem) obsElem.textContent = `"${data.observation}"`;
+      appendLog(`[VLM SCENE] "${data.observation}"`, "success");
+    } else {
+      appendLog(`[VLM WARN] ${data.observation || "No observation available"}`, "warning");
+    }
+  } catch (err) {
+    appendLog(`[VLM ERR] ${err.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.textContent = "👁️ OBSERVE SCENE";
+      btn.disabled = false;
+    }
+  }
+}
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+window.addEventListener("DOMContentLoaded", () => {
+  runBootSequence();
+  fetchStatus();
+  fetchVoiceProfiles();
+  initCameraFeed();
+  updateCameraStatus();
+  // Auto-fetch real network info on load, then every 30s
+  setTimeout(refreshNetworkInfo, 1800);   // after boot animation settles
+  setInterval(fetchStatus, 3000);
+  setInterval(updateCameraStatus, 3000);
+  setInterval(refreshNetworkInfo, 30000); // keep network panel live
+});

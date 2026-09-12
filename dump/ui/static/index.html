@@ -3,268 +3,682 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PROJECT IKRU — Companion Studio & Control Dashboard</title>
-  <link rel="stylesheet" href="style.css">
+  <title>IKRU — Autonomous Kinematic Companion</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=2.6.0">
 </head>
-<body>
-  <div class="glow-bg"></div>
+<body class="loading">
 
-  <!-- Header -->
-  <header class="studio-header">
-    <div class="logo-group">
-      <div class="robot-avatar">
-        <span class="eye left-eye"></span>
-        <span class="eye right-eye"></span>
+  <!-- ============================================================ -->
+  <!-- BOOT EXPERIENCE / ENTRY SEQUENCE (~1.5s) -->
+  <!-- ============================================================ -->
+  <div id="bootOverlay" class="boot-overlay">
+    <!-- Stage 1: Subtle Hairline Technical Blueprint Grid -->
+    <div class="boot-grid">
+      <div class="grid-line horizontal-axis"></div>
+      <div class="grid-line vertical-axis"></div>
+      <div class="grid-circle"></div>
+      <div class="crosshair ch-tl">+</div>
+      <div class="crosshair ch-tr">+</div>
+      <div class="crosshair ch-bl">+</div>
+      <div class="crosshair ch-br">+</div>
+      <div class="grid-coord coord-tl">LAT: 0.00° // LNG: 0.00°</div>
+      <div class="grid-coord coord-br">IKRU.OS // KINEMATIC CORE</div>
+    </div>
+
+    <!-- Stage 2: Geometric IKRU Wordmark Assembly -->
+    <div class="boot-stage-center">
+      <div class="boot-brackets">
+        <span class="corner-bracket b-tl"></span>
+        <span class="corner-bracket b-tr"></span>
+        <span class="corner-bracket b-bl"></span>
+        <span class="corner-bracket b-br"></span>
       </div>
-      <div>
-        <h1>PROJECT IKRU</h1>
-        <p class="subtitle">Companion Studio & Control Hub</p>
+
+      <!-- Playful Micro-Eye Wake Animation -->
+      <div class="boot-eyes" id="bootEyes">
+        <span class="boot-eye left"></span>
+        <span class="boot-eye right"></span>
+      </div>
+
+      <!-- Pure Geometric Vector Wordmark -->
+      <div class="boot-wordmark" id="bootWordmark">
+        <div class="letter-box letter-i"><span class="glyph">I</span><span class="sub-mark">01</span></div>
+        <div class="letter-box letter-k"><span class="glyph">K</span><span class="sub-mark">02</span></div>
+        <div class="letter-box letter-r"><span class="glyph">R</span><span class="sub-mark">03</span></div>
+        <div class="letter-box letter-u"><span class="glyph">U</span><span class="sub-mark">04</span></div>
+      </div>
+
+      <!-- Stage 3: Systems Beacon Status -->
+      <div class="boot-status" id="bootStatus">
+        <span class="status-indicator"></span>
+        <span class="status-text">INITIALIZING SUBSYSTEMS...</span>
       </div>
     </div>
-    <div class="header-status-pill" id="globalStatusPill">
-      <span class="status-dot offline" id="globalStatusDot"></span>
-      <span id="globalStatusText">Connecting...</span>
-    </div>
-  </header>
+  </div>
 
-  <main class="dashboard-container">
-    <!-- Network & Environment Preset Bar -->
-    <section class="network-bar card">
-      <div class="network-header-row">
-        <div class="network-presets">
-          <button class="preset-btn active" id="btnModeWifi" onclick="setMode('wifi')">
-            <span class="icon">🏠</span> Wi-Fi Network Mode
-          </button>
-          <button class="preset-btn" id="btnModeAP" onclick="setMode('ap')">
-            <span class="icon">🚀</span> Portable AP (IKRU-CAM)
-          </button>
+  <!-- ============================================================ -->
+  <!-- MAIN APPLICATION SHELL -->
+  <!-- ============================================================ -->
+  <div class="app-shell" id="appShell">
+    
+    <!-- Top Engineering Header -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <!-- Persistent Geometric IKRU Logo -->
+        <div class="brand-unit" onclick="replayBootSequence()" title="Click to replay boot animation">
+          <div class="brand-avatar">
+            <span class="avatar-eye l-eye"></span>
+            <span class="avatar-eye r-eye"></span>
+          </div>
+          <div class="brand-name">
+            <span class="wordmark-text">IKRU</span>
+            <span class="brand-badge">COMPANION OS</span>
+          </div>
         </div>
-        <button class="btn btn-secondary btn-sm" id="btnToggleWifiPanel" onclick="toggleWifiPanel()">
-          📶 Wi-Fi Provisioning & Credentials ▼
+
+        <div class="header-divider"></div>
+
+        <!-- Live Robot Connectivity Status -->
+        <div class="status-pill" id="connPill">
+          <span class="pulse-dot" id="connDot"></span>
+          <span class="status-label" id="connText">CONNECTING...</span>
+          <span class="mono-ip" id="displayRobotIp">192.168.1.42:81</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <!-- Master Speaker Volume Slider Pill -->
+        <div class="telemetry-pill volume-pill" title="Speaker & Master Volume">
+          <span class="pill-icon" id="volMuteIcon" onclick="toggleMute()" style="cursor:pointer;">🔊</span>
+          <input type="range" id="masterVolSlider" min="0" max="100" value="100" oninput="setVolume(this.value)" class="volume-slider" title="Adjust Volume (0-100%)">
+          <span class="pill-val" id="masterVolVal">100%</span>
+        </div>
+
+        <!-- Potato Battery Pill -->
+        <div class="telemetry-pill" title="Battery Status: Powered by clean biological energy">
+          <span class="pill-icon">🥔</span>
+          <span class="pill-val">100% POTATO</span>
+        </div>
+
+        <!-- TTS Engine Pill -->
+        <div class="telemetry-pill" title="Active Voice Engine">
+          <span class="pill-icon">🎙️</span>
+          <span class="pill-val" id="topVoiceEngineVal">CHATTERBOX</span>
+        </div>
+
+        <!-- Replay Boot Button -->
+        <button class="btn-icon" id="btnReplayBoot" onclick="replayBootSequence()" title="Replay Boot Sequence">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+          <span>REBOOT</span>
+        </button>
+
+        <!-- Network Config Modal Trigger -->
+        <button class="btn-icon" id="btnToggleSettings" onclick="toggleSettingsModal()" title="Hardware & Network Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
         </button>
       </div>
+    </header>
 
-      <div class="network-inputs">
-        <div class="input-field">
-          <label for="inputRobotIp">Robot Body IP:</label>
-          <div class="input-with-button">
-            <input type="text" id="inputRobotIp" value="192.168.1.42" placeholder="192.168.1.42">
-            <button class="btn btn-secondary" id="btnScan" onclick="scanNetwork()">
-              <span id="scanBtnText">🔍 Auto-Scan</span>
+    <!-- Main Workspace Grid -->
+    <main class="dashboard-grid">
+
+      <!-- ============================================================ -->
+      <!-- COLUMN 1: KINEMATICS & VISION -->
+      <!-- ============================================================ -->
+      <section class="grid-col col-left">
+
+        <!-- Card: Onboard Vision Camera -->
+        <div class="tech-card card-camera">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">CAM.01</span>
+              <h3>ONBOARD VISION VIEWPORT</h3>
+            </div>
+            <div class="card-status-badge live" id="camStatusBadge">LIVE UDP</div>
+          </div>
+
+          <div class="camera-viewport">
+            <div class="viewport-overlay">
+              <span class="vf-corner tl"></span>
+              <span class="vf-corner tr"></span>
+              <span class="vf-corner bl"></span>
+              <span class="vf-corner br"></span>
+              <div class="vf-reticle"></div>
+              <div class="vf-telemetry top-left">FPS: 25.0 // RES: 320x240</div>
+              <div class="vf-telemetry bottom-right">LENS: OV2640 WIDE</div>
+            </div>
+            <img id="camStream" src="/api/camera/stream" alt="IKRU Live Vision">
+          </div>
+
+          <div class="camera-footer">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span class="camera-note">AI Scene Observation (Qwen-VL):</span>
+              <button class="chip-btn" id="btnObserveScene" onclick="triggerSceneObservation()" style="font-size: 10px; padding: 2px 8px; cursor: pointer;">👁️ OBSERVE SCENE</button>
+            </div>
+            <span class="camera-obs-text" id="cameraObsText">"Subject detected on desk. Workspace clear."</span>
+          </div>
+        </div>
+
+        <!-- Card: Kinematic Actuation (DRV8833 Motors) -->
+        <div class="tech-card card-motors">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">DRV.8833</span>
+              <h3>KINEMATIC LOCOMOTION</h3>
+            </div>
+            <div class="card-status-badge" id="nudgeDurationLabel">0.5s NUDGE</div>
+          </div>
+
+          <div class="motor-dpad-container">
+            <div class="dpad-grid">
+              <div class="dpad-cell"></div>
+              <button class="dpad-btn btn-up" onclick="sendMovement('forward')" title="Move Forward (Arrow Up)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"></polyline></svg>
+                <span class="key-hint">↑</span>
+              </button>
+              <div class="dpad-cell"></div>
+
+              <button class="dpad-btn btn-left" onclick="sendMovement('left')" title="Turn Left (Arrow Left)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                <span class="key-hint">←</span>
+              </button>
+              <button class="dpad-btn btn-stop" onclick="sendMovement('stop')" title="Emergency Stop (Space)">
+                <div class="stop-square"></div>
+                <span class="key-hint">SPC</span>
+              </button>
+              <button class="dpad-btn btn-right" onclick="sendMovement('right')" title="Turn Right (Arrow Right)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                <span class="key-hint">→</span>
+              </button>
+
+              <div class="dpad-cell"></div>
+              <button class="dpad-btn btn-down" onclick="sendMovement('backward')" title="Move Backward (Arrow Down)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                <span class="key-hint">↓</span>
+              </button>
+              <div class="dpad-cell"></div>
+            </div>
+
+            <!-- Kinetic Action Presets -->
+            <div class="motor-actions-row">
+              <button class="btn-action" onclick="sendMovement('dance')">
+                <span class="action-icon">⚡</span> DANCE
+              </button>
+              <button class="btn-action" onclick="sendMovement('sing')">
+                <span class="action-icon">🎵</span> SING
+              </button>
+              <button class="btn-action" onclick="sendMovement('left', 1.2)">
+                <span class="action-icon">🔄</span> 360° SPIN
+              </button>
+            </div>
+
+            <!-- Nudge Slider -->
+            <div class="slider-row">
+              <label for="nudgeSlider">Step Duration:</label>
+              <input type="range" id="nudgeSlider" min="0.2" max="3.0" step="0.1" value="0.5" oninput="updateNudgeDuration(this.value)">
+              <span class="slider-val" id="nudgeSliderVal">0.5s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card: Wi-Fi Provisioning (No Firmware Hardcoding) -->
+        <div class="tech-card card-wifi">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">NET.WIFI</span>
+              <h3>WI-FI PROVISIONING</h3>
+            </div>
+            <div class="card-status-badge active" id="wifiStatusBadge">READY</div>
+          </div>
+
+          <!-- Live Network Info Panel -->
+          <div class="net-info-panel" id="netInfoPanel">
+            <div class="net-info-row">
+              <span class="net-info-label">PC SSID</span>
+              <span class="net-info-val" id="netSsid">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">SIGNAL</span>
+              <span class="net-info-val signal-val" id="netSignal">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">SERVER IP</span>
+              <span class="net-info-val mono" id="netServerIp">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">GATEWAY</span>
+              <span class="net-info-val mono" id="netGateway">—</span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">ROBOT IP</span>
+              <span class="net-info-val mono" id="netRobotIp">—</span>
+              <span class="net-reach-dot" id="netRobotDot" title="Robot reachability"></span>
+            </div>
+            <div class="net-info-row">
+              <span class="net-info-label">CAM IP</span>
+              <span class="net-info-val mono" id="netCamIp">—</span>
+              <span class="net-reach-dot" id="netCamDot" title="Camera reachability"></span>
+            </div>
+            <button class="btn-text-action" style="margin-top:6px;" onclick="refreshNetworkInfo()" id="btnRefreshNet">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>REFRESH</span>
+            </button>
+          </div>
+
+          <div class="wifi-card-body">
+            <div class="wifi-input-group">
+              <div class="input-label-row">
+                <label for="wifiSsidInput">Network SSID:</label>
+                <button class="btn-text-action" onclick="scanWiFiNetworks()" title="Scan for nearby Wi-Fi networks">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 12a11.05 11.05 0 0 0-22 0zm-5 0a6 6 0 0 0-12 0zm-5 0a1 1 0 0 0-2 0z"/></svg>
+                  <span>SCAN NETWORKS</span>
+                </button>
+              </div>
+              <div class="input-select-wrapper">
+                <input type="text" id="wifiSsidInput" list="wifiNetworkList" placeholder="Select or type Wi-Fi SSID..." value="">
+                <datalist id="wifiNetworkList">
+                </datalist>
+              </div>
+            </div>
+
+            <div class="wifi-input-group">
+              <label for="wifiPassInput">Wi-Fi Password:</label>
+              <div class="pass-wrapper">
+                <input type="password" id="wifiPassInput" placeholder="Enter Wi-Fi password...">
+                <button class="btn-toggle-pass" onclick="togglePassVisibility()" title="Show/Hide Password" type="button">👁</button>
+              </div>
+            </div>
+
+            <div class="wifi-mode-row">
+              <span class="mode-label">Method:</span>
+              <label class="radio-label"><input type="radio" name="wifiMethod" value="auto" checked> <span>Auto (Network/USB)</span></label>
+              <label class="radio-label"><input type="radio" name="wifiMethod" value="serial"> <span>USB Serial</span></label>
+            </div>
+
+            <button class="btn-primary" id="btnConnectWiFi" onclick="applyWiFiCredentials()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+              <span>CONNECT IKRU TO WI-FI</span>
             </button>
           </div>
         </div>
 
-        <div class="input-field">
-          <label for="inputCamIp">Camera Head IP:</label>
-          <input type="text" id="inputCamIp" value="192.168.4.1" placeholder="192.168.4.1">
-        </div>
-      </div>
 
-      <!-- Wi-Fi Provisioning Panel -->
-      <div class="wifi-provision-panel" id="wifiProvisionPanel">
-        <div class="wifi-panel-header">
-          <h3>📶 Configure Robot Wi-Fi (Home, Friend's House, or Mobile Hotspot)</h3>
-          <span class="badge" id="badgeCurrentFirmwareSsid">Firmware Default: Loading...</span>
-        </div>
-        
-        <div class="wifi-inputs-grid">
-          <div class="input-field">
-            <label for="inputWifiSsid">Network SSID (Name):</label>
-            <input type="text" id="inputWifiSsid" placeholder="e.g. FriendsHomeWiFi or Hotspot">
-          </div>
-          <div class="input-field">
-            <label for="inputWifiPass">Network Password:</label>
-            <div class="input-with-button">
-              <input type="password" id="inputWifiPass" placeholder="Enter Wi-Fi Password">
-              <button class="btn btn-secondary" type="button" onclick="togglePasswordVisibility('inputWifiPass')" title="Toggle Show/Hide">👁️</button>
-            </div>
-          </div>
-          <div class="input-field">
-            <label for="selectComPort">USB Serial COM Port:</label>
-            <div class="input-with-button">
-              <select id="selectComPort">
-                <option value="">Scanning COM ports...</option>
-              </select>
-              <button class="btn btn-secondary" type="button" onclick="fetchComPorts()" title="Refresh Ports">🔄</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="wifi-action-buttons">
-          <button class="btn btn-primary" onclick="pushWifiActive()" title="Sends Wi-Fi credentials to the currently connected robot via WebSocket">
-            🚀 Push via Active Robot (Wi-Fi)
-          </button>
-          <button class="btn btn-secondary" onclick="pushWifiSerial()" title="Directly writes credentials to robot over USB Serial">
-            ⚡ Push via USB Serial (COM Port)
-          </button>
-          <button class="btn btn-secondary" onclick="saveFirmwareWifi()" title="Updates the default Wi-Fi in controller.ino so re-flashing always uses it">
-            💾 Update Firmware Default (controller.ino)
-          </button>
-        </div>
-
-        <div class="wifi-hint-box">
-          <span class="hint-icon">ℹ️</span>
-          <span><strong>Quick Tip:</strong> When moving to a friend's house, enter their Wi-Fi SSID and Password here and click <strong>Push via Active Robot</strong> (if robot is currently on your hotspot/network) or plug in via USB and click <strong>Push via USB Serial</strong> (make sure Arduino Serial Monitor is closed first). You can also click <strong>Update Firmware Default</strong> to permanently save it in the Arduino sketch!</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- Main 3-Column Grid -->
-    <div class="dashboard-grid">
-      <!-- Col 1: System Health Checklist -->
-      <section class="card health-card">
-        <div class="card-header">
-          <h2>Pre-Flight Diagnostics</h2>
-          <span class="badge" id="refreshTimer">Auto 3s</span>
-        </div>
-
-        <div class="diagnostic-list">
-          <div class="diag-item" id="diagOllama">
-            <div class="diag-info">
-              <span class="diag-title">Local LLM (Ollama)</span>
-              <span class="diag-sub" id="ollamaDetails">Checking...</span>
-            </div>
-            <span class="status-pill pending" id="pillOllama">Pending</span>
-          </div>
-
-          <div class="diag-item" id="diagRobot">
-            <div class="diag-info">
-              <span class="diag-title">ESP32 Body & OLED</span>
-              <span class="diag-sub" id="robotDetails">ws://192.168.1.34:81</span>
-            </div>
-            <span class="status-pill pending" id="pillRobot">Pending</span>
-          </div>
-
-          <div class="diag-item" id="diagAudio">
-            <div class="diag-info">
-              <span class="diag-title">Audio Streaming Server</span>
-              <span class="diag-sub" id="audioDetails">Port 8000 (Ready)</span>
-            </div>
-            <span class="status-pill online" id="pillAudio">Ready</span>
-          </div>
-
-          <div class="diag-item" id="diagCam">
-            <div class="diag-info">
-              <span class="diag-title">ESP32-CAM Head Unit</span>
-              <span class="diag-sub" id="camDetails">UDP 2222 / Discovery 2223</span>
-            </div>
-            <span class="status-pill pending" id="pillCam">Pending</span>
-          </div>
-        </div>
-
-        <!-- Quick Help Alert -->
-        <div class="info-alert" id="firewallHint">
-          <span class="alert-icon">💡</span>
-          <span>If visiting a friend, ensure Windows Wi-Fi is set to <strong>Private Network</strong> so the robot speaker can fetch speech!</span>
-        </div>
       </section>
 
-      <!-- Col 2: Interactive Robot Sandbox -->
-      <section class="card sandbox-card">
-        <div class="card-header">
-          <h2>Interactive Robot Sandbox</h2>
-          <span class="badge badge-accent">Live Controls</span>
-        </div>
+      <!-- ============================================================ -->
+      <!-- COLUMN 2: OLED EYES EMULATOR & EMOTIONS -->
+      <!-- ============================================================ -->
+      <section class="grid-col col-center">
 
-        <!-- OLED Eyes Tester -->
-        <div class="sandbox-section">
-          <h3>OLED Eye Expressions</h3>
-          <div class="button-grid">
-            <button class="btn btn-emotion" onclick="testEmotion('HAPPY')">😊 Happy</button>
-            <button class="btn btn-emotion" onclick="testEmotion('GLEE')">✨ Glee</button>
-            <button class="btn btn-emotion" onclick="testEmotion('FOCUSED')">🎯 Focused</button>
-            <button class="btn btn-emotion" onclick="testEmotion('SURPRISED')">😲 Surprised</button>
-            <button class="btn btn-emotion" onclick="testEmotion('SAD')">🥺 Sad</button>
-            <button class="btn btn-emotion" onclick="testEmotion('NORMAL')">😐 Normal</button>
+        <!-- Card: Real-time OLED Face Emulator -->
+        <div class="tech-card card-face">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">OLED.128x64</span>
+              <h3>EXPRESSIVE FACE EMULATOR</h3>
+            </div>
+            <div class="active-emotion-badge" id="activeEmotionBadge">HAPPY</div>
+          </div>
+
+          <!-- Physical 128x64 SSD1306 Style Canvas -->
+          <div class="oled-frame-bezel">
+            <div class="oled-glass" id="oledGlass">
+              <div class="oled-eye oled-eye-left" id="oledEyeLeft"></div>
+              <div class="oled-eye oled-eye-right" id="oledEyeRight"></div>
+            </div>
+            <div class="oled-screen-meta">
+              <span>SSD1306 // 128x64 MONOCHROME</span>
+              <span id="oledTimer">DURATION: STEADY</span>
+            </div>
+          </div>
+
+          <!-- Card: Conversational Companion (Talk to Ikru) -->
+          <div class="tech-card card-chat">
+            <div class="card-header">
+              <div class="card-title">
+                <span class="card-tag">AI.DIALOGUE</span>
+                <h3>TALK TO IKRU</h3>
+              </div>
+              <div class="card-status-badge active" id="chatEngineStatus">OLLAMA // READY</div>
+            </div>
+
+            <!-- Conversational Dialogue Transcript -->
+            <div class="chat-transcript-box" id="chatTranscriptBox">
+              <div class="chat-msg assistant">
+                <div class="chat-sender">
+                  <span class="sender-name">IKRU</span>
+                  <span class="emo-tag">[GLEE]</span>
+                </div>
+                <div class="chat-bubble">
+                  Hello! I am Ikru, your desk companion robot. You can talk to me with the mic below, or type anything!
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Prompts Chips -->
+            <div class="quick-prompts-row">
+              <button class="prompt-chip" onclick="sendQuickPrompt('Hey Ikru, tell me a funny joke!')">"Tell me a joke"</button>
+              <button class="prompt-chip" onclick="sendQuickPrompt('Can you dance for me?')">"Dance for me"</button>
+              <button class="prompt-chip" onclick="sendQuickPrompt('How are you feeling today?')">"How are you feeling?"</button>
+              <button class="prompt-chip" onclick="sendQuickPrompt('Sing me a little tune!')">"Sing a tune"</button>
+            </div>
+
+            <!-- Conversational Input Bar -->
+            <div class="chat-input-bar">
+              <button class="btn-mic" id="btnMic" onclick="toggleVoiceInput()" title="Click to speak with microphone">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+              </button>
+              <input type="text" id="chatTextInput" placeholder="Talk to Ikru (e.g. 'Turn left', 'What do you think of robotics?')..." onkeydown="if(event.key==='Enter') sendChatMessage()">
+              <button class="btn-send" id="btnSendChat" onclick="sendChatMessage()" title="Send prompt to Ikru">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                <span>SEND</span>
+              </button>
+            </div>
+
+            <!-- Chat Audio Routing & Status -->
+            <div class="chat-footer-controls">
+              <div class="audio-options-inline">
+                <label class="checkbox-label" title="Stream voice directly to ESP32 MAX98357A speaker">
+                  <input type="checkbox" id="chkChatStreamRobot" checked>
+                  <span>🔊 Robot Speaker</span>
+                </label>
+                <label class="checkbox-label" title="Play voice through PC / Browser speakers">
+                  <input type="checkbox" id="chkChatPlayPC" checked>
+                  <span>💻 PC / Browser</span>
+                </label>
+                <div class="engine-toggle-group" title="Select speech generation speed vs zero-shot emotion model">
+                  <label class="engine-option" title="Instant 0.3s response time via Microsoft Neural Voice">
+                    <input type="radio" name="chatTtsEngine" value="edge" checked>
+                    <span>⚡ Fast (0.3s)</span>
+                  </label>
+                  <label class="engine-option" title="High-fidelity paralinguistic neural vocalization via Chatterbox">
+                    <input type="radio" name="chatTtsEngine" value="chatterbox">
+                    <span>🎙️ Expressive (~20s)</span>
+                  </label>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;">
+                <button class="btn-clear-chat" onclick="clearChatHistory()" title="Clear chat history and reset conversation">↺ Reset</button>
+                <span class="chat-status-text" id="chatStatusText">IDLE</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Full 18 OLED Emotions Palette -->
+          <div class="emotions-section">
+            <div class="section-label">ACTIVE EXPRESSIONS PALETTE:</div>
+            <div class="emotions-grid">
+              <button class="emo-btn active" data-emo="happy" onclick="setEmotion('happy')">
+                <span class="emo-sym">😊</span> happy
+              </button>
+              <button class="emo-btn" data-emo="glee" onclick="setEmotion('glee')">
+                <span class="emo-sym">✨</span> glee
+              </button>
+              <button class="emo-btn" data-emo="focused" onclick="setEmotion('focused')">
+                <span class="emo-sym">🎯</span> focused
+              </button>
+              <button class="emo-btn" data-emo="surprised" onclick="setEmotion('surprised')">
+                <span class="emo-sym">😲</span> surprised
+              </button>
+              <button class="emo-btn" data-emo="sad" onclick="setEmotion('sad')">
+                <span class="emo-sym">🥺</span> sad
+              </button>
+              <button class="emo-btn" data-emo="worried" onclick="setEmotion('worried')">
+                <span class="emo-sym">😟</span> worried
+              </button>
+              <button class="emo-btn" data-emo="annoyed" onclick="setEmotion('annoyed')">
+                <span class="emo-sym">😒</span> annoyed
+              </button>
+              <button class="emo-btn" data-emo="skeptic" onclick="setEmotion('skeptic')">
+                <span class="emo-sym">🤨</span> skeptic
+              </button>
+              <button class="emo-btn" data-emo="frustrated" onclick="setEmotion('frustrated')">
+                <span class="emo-sym">😤</span> frustrated
+              </button>
+              <button class="emo-btn" data-emo="unimpressed" onclick="setEmotion('unimpressed')">
+                <span class="emo-sym">😑</span> unimpressed
+              </button>
+              <button class="emo-btn" data-emo="sleepy" onclick="setEmotion('sleepy')">
+                <span class="emo-sym">😴</span> sleepy
+              </button>
+              <button class="emo-btn" data-emo="suspicious" onclick="setEmotion('suspicious')">
+                <span class="emo-sym">🧐</span> suspicious
+              </button>
+              <button class="emo-btn" data-emo="squint" onclick="setEmotion('squint')">
+                <span class="emo-sym">👀</span> squint
+              </button>
+              <button class="emo-btn" data-emo="angry" onclick="setEmotion('angry')">
+                <span class="emo-sym">😠</span> angry
+              </button>
+              <button class="emo-btn" data-emo="furious" onclick="setEmotion('furious')">
+                <span class="emo-sym">🔥</span> furious
+              </button>
+              <button class="emo-btn" data-emo="scared" onclick="setEmotion('scared')">
+                <span class="emo-sym">😨</span> scared
+              </button>
+              <button class="emo-btn" data-emo="awe" onclick="setEmotion('awe')">
+                <span class="emo-sym">⭐</span> awe
+              </button>
+              <button class="emo-btn" data-emo="normal" onclick="setEmotion('normal')">
+                <span class="emo-sym">😐</span> normal
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- Motor Controls -->
-        <div class="sandbox-section">
-          <h3>DRV8833 Motors (0.5s Nudge)</h3>
-          <div class="dpad-container">
-            <div class="dpad-row">
-              <button class="btn btn-move" onclick="testMove('FORWARD')">▲</button>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- COLUMN 3: NEURAL VOICE & TELEMETRY -->
+      <!-- ============================================================ -->
+      <section class="grid-col col-right">
+
+        <!-- Card: Expressive Neural Voice & Paralinguistic Sounds -->
+        <div class="tech-card card-voice">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">TTS.VOICE</span>
+              <h3>NEURAL VOCAL EXPRESSION</h3>
             </div>
-            <div class="dpad-row">
-              <button class="btn btn-move" onclick="testMove('LEFT')">◀</button>
-              <button class="btn btn-move btn-danger" onclick="testMove('STOP')">■</button>
-              <button class="btn btn-move" onclick="testMove('RIGHT')">▶</button>
+            <div class="card-status-badge audio" id="voiceStatusBadge">44.1kHz PCM</div>
+          </div>
+
+          <!-- Quick Vocal Sound Tags Chips -->
+          <div class="vocal-chips-container">
+            <span class="chips-title">Insert Vocal Emotion Sound:</span>
+            <div class="chips-row">
+              <button class="vocal-chip" onclick="insertVocalTag('[sigh]')" title="Audible sigh / tiredness / relief">
+                [sigh]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[giggle]')" title="Warm chuckle / friendly giggle">
+                [giggle]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[laughter]')" title="Hearty human laugh">
+                [laughter]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[clear_throat]')" title="Thoughtful throat clear">
+                [clear_throat]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[gasp]')" title="Surprise / intake of breath">
+                [gasp]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[cry]')" title="Sympathetic cry / sadness">
+                [cry]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[groan]')" title="Robot grumpy groan">
+                [groan]
+              </button>
+              <button class="vocal-chip" onclick="insertVocalTag('[whisper]')" title="Hushed secret whisper">
+                [whisper]
+              </button>
             </div>
-            <div class="dpad-row">
-              <button class="btn btn-move" onclick="testMove('BACKWARD')">▼</button>
-            </div>
+          </div>
+
+          <!-- Speech Prompt Input -->
+          <div class="voice-input-group">
+            <textarea id="ttsTextInput" rows="3" placeholder="Type words with vocal tags e.g. 'Whew [sigh], my motors are tired [giggle]!'">Hi there! Ikru here [giggle], ready for our next robotics adventure!</textarea>
+          </div>
+
+          <!-- Audio Output Routing -->
+          <div class="audio-options-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chkStreamRobot" checked>
+              <span>Stream to Robot I2S (MAX98357A)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="chkPlayPC">
+              <span>Play on PC Speaker</span>
+            </label>
+          </div>
+
+          <!-- Primary Voice Action Button -->
+          <div class="voice-action-row">
+            <button class="btn-primary" id="btnSpeak" onclick="synthesizeSpeech()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+              <span>SYNTHESIZE & SPEAK</span>
+            </button>
           </div>
         </div>
 
-        <!-- Speech Synthesis Tester -->
-        <div class="sandbox-section">
-          <h3>Voice & Speaker Test</h3>
-          <div class="speech-controls">
-            <select id="selectVoice">
-              <option value="guy">US Male (Guy - Natural)</option>
-              <option value="jenny">US Female (Jenny - Warm)</option>
-              <option value="ana">US Playful (Ana - Animated)</option>
-              <option value="ryan">British (Ryan)</option>
-              <option value="prabhat">Indian (Prabhat)</option>
-            </select>
-            <input type="text" id="inputSpeakText" value="Hello! I am Ikru, your desk companion. Systems operational!" placeholder="Enter test speech...">
-            <div class="speech-action-row">
-              <label class="toggle-label">
-                <input type="checkbox" id="checkTestPcAudio" checked> Play on PC also
+        <!-- Card: Chatterbox Zero-Shot Voice Cloning Studio -->
+        <div class="tech-card card-clone">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">CHATTERBOX.CLONE</span>
+              <h3>VOICE CLONING STUDIO</h3>
+            </div>
+            <div class="card-status-badge active" id="activeVoiceBadge">DEFAULT IKRU</div>
+          </div>
+
+          <div class="clone-card-body">
+            <div class="clone-instructions">
+              Upload or record a 5–15s clean audio sample of any human voice. Chatterbox will learn and clone it instantly!
+            </div>
+
+            <!-- Upload & Record Action Bar -->
+            <div class="clone-action-bar">
+              <label class="btn-secondary btn-file-label" title="Upload WAV/MP3 voice reference">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                <span>CHOOSE AUDIO FILE</span>
+                <input type="file" id="voiceFileInput" accept="audio/*" onchange="handleVoiceFileSelect(this)" style="display:none;">
               </label>
-              <button class="btn btn-primary" onclick="testSpeech()">🔊 Test Voice</button>
+
+              <button class="btn-secondary btn-rec" id="btnRecordSample" onclick="toggleVoiceSampleRecord()" title="Record reference voice from your microphone">
+                <span class="rec-dot" id="recDot"></span>
+                <span id="btnRecordSampleText">RECORD SAMPLE</span>
+              </button>
+            </div>
+
+            <!-- Audio Preview Player -->
+            <div class="audio-preview-box" id="audioPreviewBox" style="display:none;">
+              <span class="preview-title" id="previewTitle">Reference Audio Preview:</span>
+              <audio id="cloneAudioPreview" controls style="width: 100%; height: 32px; margin-top: 6px;"></audio>
+            </div>
+
+            <!-- Profile Name & Clone Action -->
+            <div class="clone-save-row">
+              <input type="text" id="cloneVoiceName" placeholder="Voice profile name (e.g. 'Morgan', 'Jarvis')...">
+              <button class="btn-primary" id="btnApplyClone" onclick="saveAndApplyClonedVoice()" disabled>
+                <span>CLONE & ACTIVATE</span>
+              </button>
+            </div>
+
+            <!-- Saved Voice Profiles -->
+            <div class="voice-profiles-section">
+              <div class="section-label">SAVED VOICE PROFILES:</div>
+              <div class="profiles-list" id="voiceProfilesList">
+                <div class="profile-item active" onclick="selectVoiceProfile('default')">
+                  <span class="profile-name">Default Ikru (Neural)</span>
+                  <span class="badge-active">ACTIVE</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </section>
 
-      <!-- Col 3: Assistant Launcher & Live Console -->
-      <section class="card launcher-card">
-        <div class="card-header">
-          <h2>Assistant Launcher</h2>
-          <span class="status-pill offline" id="pillAssistant">Stopped</span>
-        </div>
-
-        <!-- Launch Options -->
-        <div class="launcher-options">
-          <label class="toggle-label">
-            <input type="checkbox" id="checkLaunchPcAudio"> PC Speaker Audio also
-          </label>
-          <label class="toggle-label">
-            <input type="checkbox" id="checkLaunchNoMic"> Typing Only (Disable Mic)
-          </label>
-          <label class="toggle-label">
-            <input type="checkbox" id="checkLaunchNoVision"> Headless (Disable Vision)
-          </label>
-        </div>
-
-        <!-- Big Launch Button -->
-        <div class="launch-action">
-          <button class="btn btn-launch" id="btnLaunch" onclick="toggleAssistant()">
-            <span id="launchBtnIcon">🚀</span>
-            <span id="launchBtnText">Start AI Assistant</span>
-          </button>
-        </div>
-
-        <!-- Live Terminal Stream -->
-        <div class="terminal-container">
-          <div class="terminal-header">
-            <span>Terminal Output</span>
-            <button class="btn-clear" onclick="clearLogs()">Clear</button>
+        <!-- Card: Real-time System Event Log -->
+        <div class="tech-card card-telemetry">
+          <div class="card-header">
+            <div class="card-title">
+              <span class="card-tag">SYS.LOG</span>
+              <h3>ENGINEERING EVENT TELEMETRY</h3>
+            </div>
+            <button class="btn-text-only" onclick="clearTelemetryLog()">CLEAR</button>
           </div>
-          <div class="terminal-body" id="terminalOutput">
-            <div class="log-line text-dim">[Studio Ready] Select options and click 'Start AI Assistant' to begin.</div>
+
+          <div class="log-stream-box" id="logStreamBox">
+            <div class="log-entry sys">[SYSTEM] IKRU Companion OS Kernel initialized.</div>
+            <div class="log-entry">[NET] Robot target: ws://192.168.1.42:81</div>
+            <div class="log-entry">[AUDIO] Audio service ready on port 8000.</div>
           </div>
         </div>
+
       </section>
+
+    </main>
+
+    <!-- Bottom Engineering Status Bar -->
+    <footer class="bottom-bar">
+      <div class="bar-left">
+        <span class="mono-tag">IKRU-V2.5-PRO</span>
+        <span class="bar-separator">/</span>
+        <span id="barPingText">PING: 2ms</span>
+        <span class="bar-separator">/</span>
+        <span>DRV8833: GPIO 18/19</span>
+        <span class="bar-separator">/</span>
+        <span>MAX98357A: GPIO 25/26/27</span>
+      </div>
+      <div class="bar-right">
+        <span>KINETIC STATUS: STANDBY</span>
+        <span class="bar-separator">/</span>
+        <span class="mono-tag">POTATO-CORE: OPTIMAL</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Settings & Provisioning Modal -->
+  <div class="modal-backdrop" id="settingsModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>HARDWARE & NETWORK CONFIGURATION</h3>
+        <button class="btn-close" onclick="toggleSettingsModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cfgRobotIp">Robot Body IP (WebSocket ws://{ip}:81):</label>
+          <div class="input-inline">
+            <input type="text" id="cfgRobotIp" value="192.168.1.42">
+            <button class="btn-secondary" onclick="scanNetworkNodes()">AUTO SCAN</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="cfgCamIp">ESP32-CAM IP (HTTP/UDP):</label>
+          <input type="text" id="cfgCamIp" value="192.168.4.1">
+        </div>
+        <div class="form-group">
+          <label>Wi-Fi Provisioning (Send new credentials over WebSocket/Serial):</label>
+          <div class="input-inline">
+            <input type="text" id="cfgSsid" placeholder="Wi-Fi SSID">
+            <input type="password" id="cfgPass" placeholder="Wi-Fi Password">
+            <button class="btn-secondary" onclick="provisionWiFi()">APPLY</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="saveSettings()">SAVE & RECONNECT</button>
+      </div>
     </div>
-  </main>
+  </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.6.0"></script>
 </body>
 </html>
