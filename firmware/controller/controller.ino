@@ -1,7 +1,16 @@
 #include "Face.h"
+#include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <Preferences.h>
+#include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <Wire.h>
+#include "ESP_I2S.h"
+
+Preferences preferences;
+WebServer setupServer(80);
 
 // ============================================================
 // IKRU DESK COMPANION ROBOT
@@ -11,6 +20,7 @@
 // DRV8833 Dual H-Bridge Motor Driver
 // 2x DC Motor
 // SSD1306 128x64 I2C OLED (driven via U8g2 through the Face library)
+// MAX98357A I2S DAC Amplifier + Speaker
 //
 // Communication:
 // WiFi + WebSocket
@@ -21,11 +31,11 @@
 // ============================================================
 
 // ============================================================
-// WIFI (Connecting to IKRU-CAM Head Access Point)
+// WIFI (Dynamic NVS + SoftAP Web Portal Setup)
 // ============================================================
 
-const char *ssid = "IKRU-CAM";
-const char *password = "ikru@potato";
+const char *fallback_ssid = "IKRU-CAM";
+const char *fallback_pass = "ikru@potato";
 
 WebSocketsServer webSocket(81);
 
@@ -37,13 +47,34 @@ WebSocketsServer webSocket(81);
 #define EN1 13
 #define EN2 33
 
-// Left motor
-#define C1A 26
-#define C1B 27
+// Left motor (remapped to GPIO 18 & 19 to avoid conflict with I2S audio on GPIO 26 & 27)
+#define C1A 18
+#define C1B 19
 
 // Right motor
 #define C2A 14
 #define C2B 12
+
+// ============================================================
+// MAX98357A / I2S AUDIO
+// ============================================================
+
+I2SClass I2S;
+
+#define I2S_WS 25
+#define I2S_BCLK 26
+#define I2S_DOUT 27
+
+#define AUDIO_SAMPLE_RATE 44100
+#define AUDIO_BUFFER_SIZE 16384
+
+uint8_t audioBuffer[AUDIO_BUFFER_SIZE];
+char pendingAudioURL[256] = "";
+volatile bool hasAudioRequest = false;
+volatile bool isAudioPlaying = false;
+volatile bool stopAudioRequested = false;
+volatile float currentVolumeFactor = 1.0f;
+TaskHandle_t audioTaskHandle = NULL;
 
 // ============================================================
 // OLED MODES
@@ -721,6 +752,296 @@ void showWiFiConnected() {
 }
 
 // ============================================================
+// DYNAMIC WIFI CONFIGURATION (NVS + RECONNECT)
+// ============================================================
+
+void applyNewWiFi(String new_ssid, String new_pass) {
+  Serial.println();
+  Serial.println("==============================");
+  Serial.print("[WiFi] Switching to: ");
+  Serial.println(new_ssid);
+  Serial.println("==============================");
+
+  // Show on OLED
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(0, 14, "Configuring WiFi...");
+  u8g2.drawStr(0, 30, new_ssid.substring(0, 20).c_str());
+  u8g2.drawStr(0, 48, "Please wait...");
+  u8g2.sendBuffer();
+
+  WiFi.disconnect(true);
+  delay(500);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  WiFi.begin(new_ssid.c_str(), new_pass.c_str());
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 25) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.println("Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    // Save to NVS
+    preferences.begin("ikru_wifi", false);
+    preferences.putString("ssid", new_ssid);
+    preferences.putString("pass", new_pass);
+    preferences.end();
+    Serial.println("[WiFi] Saved credentials to flash memory (NVS).");
+
+    showWiFiConnected();
+  } else {
+    Serial.println();
+    Serial.println("WiFi connect failed! Reverting to fallback...");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 20, "WiFi Connect Failed!");
+    u8g2.drawStr(0, 38, "Reverting to fallback");
+    u8g2.sendBuffer();
+    delay(1500);
+
+    WiFi.begin(fallback_ssid, fallback_pass);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+    }
+    showWiFiConnected();
+  }
+}
+
+// ============================================================
+// AUDIO STREAMING & PLAYBACK (I2S MAX98357A)
+// ============================================================
+
+static inline uint16_t readLE16(uint8_t *p) {
+  return ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
+}
+
+static inline uint32_t readLE32(uint8_t *p) {
+  return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+bool readExact(WiFiClient &stream, uint8_t *buffer, size_t length) {
+  size_t received = 0;
+  while (received < length && !stopAudioRequested) {
+    if (stream.available()) {
+      int n = stream.read(buffer + received, length - received);
+      if (n > 0) received += n;
+    } else {
+      if (!stream.connected()) return false;
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+  return (received == length);
+}
+
+bool skipBytes(WiFiClient &stream, uint32_t length) {
+  uint8_t temp[64];
+  while (length > 0 && !stopAudioRequested) {
+    size_t amount = min(length, (uint32_t)sizeof(temp));
+    if (!readExact(stream, temp, amount)) return false;
+    length -= amount;
+  }
+  return (length == 0);
+}
+
+bool findWavData(WiFiClient &stream, uint32_t &dataSize) {
+  uint8_t header[12];
+  if (!readExact(stream, header, 12)) {
+    Serial.println("[Audio] Cannot read WAV header");
+    return false;
+  }
+
+  if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+    Serial.println("[Audio] Invalid WAV header (not RIFF/WAVE)");
+    return false;
+  }
+
+  bool foundFmt = false;
+  while (stream.connected() && !stopAudioRequested) {
+    uint8_t chunkHeader[8];
+    if (!readExact(stream, chunkHeader, 8)) return false;
+
+    uint32_t chunkSize = readLE32(chunkHeader + 4);
+
+    if (memcmp(chunkHeader, "fmt ", 4) == 0) {
+      uint8_t fmt[16];
+      if (!readExact(stream, fmt, 16)) return false;
+
+      uint16_t format     = readLE16(fmt);
+      uint16_t channels   = readLE16(fmt + 2);
+      uint32_t sampleRate = readLE32(fmt + 4);
+      uint16_t bits       = readLE16(fmt + 14);
+
+      if (format != 1 || channels != 2 || sampleRate != 44100 || bits != 16) {
+        Serial.printf("[Audio] Unsupported format: fmt=%u, ch=%u, rate=%lu, bits=%u\n",
+                      format, channels, sampleRate, bits);
+        return false;
+      }
+
+      if (chunkSize > 16) {
+        if (!skipBytes(stream, chunkSize - 16)) return false;
+      }
+      foundFmt = true;
+
+    } else if (memcmp(chunkHeader, "data", 4) == 0) {
+      dataSize = chunkSize;
+      return foundFmt;
+
+    } else {
+      if (!skipBytes(stream, chunkSize)) return false;
+    }
+  }
+
+  return false;
+}
+
+void audioPlaybackTask(void *pvParameters) {
+  while (true) {
+    if (hasAudioRequest) {
+      hasAudioRequest = false;
+      isAudioPlaying = true;
+      stopAudioRequested = false;
+
+      String url = String(pendingAudioURL);
+      Serial.print("[Audio] Connecting to: ");
+      Serial.println(url);
+
+      HTTPClient http;
+      http.begin(url);
+      int httpCode = http.GET();
+
+      if (httpCode == HTTP_CODE_OK) {
+        WiFiClient *stream = http.getStreamPtr();
+        uint32_t dataSize = 0;
+
+        if (findWavData(*stream, dataSize)) {
+          Serial.printf("[Audio] Streaming %lu bytes to I2S...\n", dataSize);
+          uint32_t remaining = dataSize;
+
+          while (remaining > 0 && stream->connected() && !stopAudioRequested) {
+            size_t maxToRead = min((uint32_t)1024, remaining);
+
+            size_t bytesRead = 0;
+            if (stream->available() > 0) {
+              int n = stream->read(audioBuffer, maxToRead);
+              if (n > 0) bytesRead = n;
+            } else {
+              vTaskDelay(pdMS_TO_TICKS(1));
+              if (stream->available() > 0) {
+                int n = stream->read(audioBuffer, maxToRead);
+                if (n > 0) bytesRead = n;
+              }
+            }
+
+            if (bytesRead == 0) {
+              if (!stream->connected()) break;
+              continue;
+            }
+
+            // Align to 4-byte stereo frame boundary (2 bytes Left + 2 bytes Right)
+            bytesRead -= (bytesRead % 4);
+            if (bytesRead == 0) continue;
+
+            if (currentVolumeFactor < 0.99f) {
+              int16_t *samples = (int16_t *)audioBuffer;
+              size_t numSamples = bytesRead / sizeof(int16_t);
+              for (size_t i = 0; i < numSamples; i++) {
+                samples[i] = (int16_t)(samples[i] * currentVolumeFactor);
+              }
+            }
+
+            I2S.write(audioBuffer, bytesRead);
+            remaining -= bytesRead;
+          }
+          Serial.println("[Audio] Finished playback");
+        } else {
+          Serial.println("[Audio] WAV parsing failed");
+        }
+      } else {
+        Serial.printf("[Audio] HTTP GET failed: %d\n", httpCode);
+      }
+
+      http.end();
+      isAudioPlaying = false;
+      stopAudioRequested = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+// ============================================================
+// WIFI SETUP WEB PORTAL (Dynamic NVS Configuration)
+// ============================================================
+
+void handlePortalRoot() {
+  int n = WiFi.scanNetworks();
+  String options = "";
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    int32_t rssi = WiFi.RSSI(i);
+    options += "<option value='" + ssid + "'>" + ssid + " (" + String(rssi) + " dBm)</option>";
+  }
+  if (n == 0) {
+    options = "<option value=''>No networks found</option>";
+  }
+
+  String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<style>body{font-family:sans-serif;padding:20px;background:#121212;color:#fff;max-width:400px;margin:auto;}"
+                "select,input,button{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;border-radius:6px;border:1px solid #444;background:#222;color:#fff;font-size:15px;}"
+                "button{background:#007acc;font-weight:bold;border:none;cursor:pointer;}"
+                ".card{background:#1e1e1e;padding:20px;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,0.5);}</style></head><body>"
+                "<div class='card'><h2>IKRU Wi-Fi Setup</h2>"
+                "<form action='/save' method='POST'>"
+                "<label>Select Wi-Fi Network:</label>"
+                "<select name='ssid_select' onchange='if(this.value) document.getElementById(\"ssid_manual\").value=this.value;'>"
+                "<option value=''>-- Select Network --</option>" + options + "</select>"
+                "<label>Or Type SSID:</label>"
+                "<input type='text' id='ssid_manual' name='ssid' placeholder='Network SSID' required>"
+                "<label>Password:</label>"
+                "<input type='password' name='pass' placeholder='Wi-Fi Password'>"
+                "<button type='submit'>Save & Connect</button></form>"
+                "<br><a href='/' style='color:#007acc;text-decoration:none;'>Rescan Networks</a></div></body></html>";
+  setupServer.send(200, "text/html", html);
+}
+
+void handlePortalSave() {
+  if (setupServer.hasArg("ssid")) {
+    String s = setupServer.arg("ssid");
+    String p = setupServer.arg("pass");
+    preferences.begin("ikru_wifi", false);
+    preferences.putString("ssid", s);
+    preferences.putString("pass", p);
+    preferences.end();
+    setupServer.send(200, "text/html", "<html><body style='background:#121212;color:#fff;font-family:sans-serif;padding:20px;'><h3>Wi-Fi Credentials Saved!</h3><p>Restarting ESP32 and connecting...</p></body></html>");
+    delay(1000);
+    ESP.restart();
+  } else {
+    setupServer.send(400, "text/plain", "Missing SSID");
+  }
+}
+
+void handlePortalReset() {
+  preferences.begin("ikru_wifi", false);
+  preferences.clear();
+  preferences.end();
+  setupServer.send(200, "text/html", "<html><body><h3>Saved Wi-Fi Cleared! Restarting...</h3></body></html>");
+  delay(1000);
+  ESP.restart();
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 
@@ -747,6 +1068,22 @@ void setup() {
   // OLED + Face library init
   oledStartup();
 
+  // ============================================================
+  // I2S AUDIO (MAX98357A)
+  // ============================================================
+  Serial.println("Starting I2S Audio...");
+  I2S.setPins(I2S_BCLK, I2S_WS, I2S_DOUT);
+  if (!I2S.begin(I2S_MODE_STD, AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
+                 I2S_SLOT_MODE_STEREO)) {
+    Serial.println("[Audio] I2S initialization FAILED!");
+  } else {
+    Serial.println("[Audio] I2S ready");
+  }
+
+  // Pin audio playback task to Core 0 (leaving Core 1 for OLED & WebSocket loops)
+  xTaskCreatePinnedToCore(audioPlaybackTask, "audioTask", 10240, NULL, 1,
+                          &audioTaskHandle, 0);
+
   // WiFi
   showConnecting();
 
@@ -755,21 +1092,71 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  WiFi.begin(ssid, password);
 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // Load saved Wi-Fi from NVS Flash
+  preferences.begin("ikru_wifi", true);
+  String saved_ssid = preferences.getString("ssid", "");
+  String saved_pass = preferences.getString("pass", "");
+  preferences.end();
+
+  if (saved_ssid.length() > 0) {
+    Serial.print("[WiFi] Connecting using saved NVS credentials: ");
+    Serial.println(saved_ssid);
+    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
+
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 25) {
+      delay(500);
+      Serial.print(".");
+      retries++;
+    }
   }
 
-  WiFi.setSleep(false);
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nTrying fallback AP (IKRU-CAM)...");
+    WiFi.begin(fallback_ssid, fallback_pass);
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 15) {
+      delay(500);
+      Serial.print(".");
+      retries++;
+    }
+  }
 
-  Serial.println();
-  Serial.println("Connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n[WiFi] Could not connect to any network. Starting Setup Portal: IKRU-SETUP");
+    WiFi.disconnect();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("IKRU-SETUP", "12345678");
+    Serial.print("[WiFi] AP IP address: ");
+    Serial.println(WiFi.softAPIP());
 
-  showWiFiConnected();
+    setupServer.on("/", HTTP_GET, handlePortalRoot);
+    setupServer.on("/save", HTTP_POST, handlePortalSave);
+    setupServer.on("/reset", HTTP_GET, handlePortalReset);
+    setupServer.begin();
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 14, "AP: IKRU-SETUP");
+    u8g2.drawStr(0, 30, "Pass: 12345678");
+    u8g2.drawStr(0, 48, "IP: 192.168.4.1");
+    u8g2.sendBuffer();
+    delay(1500);
+  } else {
+    Serial.println();
+    Serial.println("Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    if (MDNS.begin("ikru-robot")) {
+      MDNS.addService("ws", "tcp", 81);
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("[mDNS] Responder active: ikru-robot.local");
+    }
+
+    showWiFiConnected();
+  }
 
   // WebSocket
   webSocket.begin();
@@ -788,12 +1175,12 @@ void setup() {
 // ============================================================
 
 void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    setupServer.handleClient();
+  }
 
   // WebSocket
   webSocket.loop();
-
-  // Update speech scroll (returns early if not in speaking mode)
-  updateSpeechScroll();
 
   unsigned long now = millis();
   float dt = (now - animationLastMillis) / 1000.0;
@@ -814,17 +1201,22 @@ void loop() {
   // Clear buffer for new frame
   u8g2.clearBuffer();
 
-  // Draw speech box whenever it has any width
-  // (speaking, waiting between segments, or during open/close animation)
-  if (speechBoxWidth > 0) {
-    drawSpeakingText();
-  }
-
-  // Draw eyes (handles blinking, random looks, etc.)
+  // Draw full-screen animated eyes (handles blinking, expressions, eye tracking)
   face->Update();
 
   // Render to OLED
   u8g2.sendBuffer();
+
+  // Serial command listener (via USB)
+  if (Serial.available()) {
+    String serialCmd = Serial.readStringUntil('\n');
+    serialCmd.trim();
+    if (serialCmd.length() > 0) {
+      Serial.print("[Serial] Received: ");
+      Serial.println(serialCmd);
+      parseCommand(serialCmd);
+    }
+  }
 }
 
 // ============================================================
@@ -839,14 +1231,12 @@ void webSocketEvent(uint8_t client, WStype_t type, uint8_t *payload,
     // CONNECTED
   case WStype_CONNECTED:
     Serial.println("Client Connected");
-    oledMessage("Connected!");
     break;
 
     // DISCONNECTED
   case WStype_DISCONNECTED:
     Serial.println("Client Disconnected");
     stopMotors();
-    oledMessage("Disconnected");
     break;
 
     // TEXT
@@ -875,24 +1265,67 @@ void parseCommand(String input) {
   input.trim();
 
   // ==========================================================
-  // DISPLAY COMMAND
-  //
-  // DISPLAY:Hello there!
+  // DISPLAY COMMANDS (No-op now that natural voice is active)
   // ==========================================================
 
-  if (input == "DISPLAY_OPEN") {
-    oledOpen();
-    return;
-  }
-
-  if (input == "DISPLAY_CLOSE") {
-    oledClose();
+  if (input == "DISPLAY_OPEN" || input == "DISPLAY_CLOSE") {
     return;
   }
 
   if (input.startsWith("DISPLAY:")) {
-    String message = input.substring(8);
-    oledMessage(message);
+    Serial.print("Display text (voice mode): ");
+    Serial.println(input.substring(8));
+    return;
+  }
+
+  // ==========================================================
+  // AUDIO COMMANDS (Case-sensitive URLs)
+  // ==========================================================
+
+  if (input.startsWith("SPEAK_URL:") || input.startsWith("AUDIO:")) {
+    int idx = input.indexOf(':');
+    String url = input.substring(idx + 1);
+    url.trim();
+    strncpy(pendingAudioURL, url.c_str(), sizeof(pendingAudioURL) - 1);
+    pendingAudioURL[sizeof(pendingAudioURL) - 1] = '\0';
+    hasAudioRequest = true;
+    return;
+  }
+
+  if (input == "STOP_AUDIO") {
+    stopAudioRequested = true;
+    return;
+  }
+
+  // ==========================================================
+  // VOLUME CONTROL COMMAND
+  // Format: VOLUME:<0-100> or SET_VOLUME:<0-100>
+  // ==========================================================
+
+  if (input.startsWith("VOLUME:") || input.startsWith("SET_VOLUME:")) {
+    int colonIdx = input.indexOf(':');
+    int vol = input.substring(colonIdx + 1).toInt();
+    vol = constrain(vol, 0, 100);
+    currentVolumeFactor = vol / 100.0f;
+    Serial.printf("[Audio] Firmware volume set to %d%% (factor: %.2f)\n", vol, currentVolumeFactor);
+    return;
+  }
+
+  // ==========================================================
+  // WIFI CONFIGURATION COMMAND (Case-sensitive SSID & Pass)
+  // Format: SET_WIFI:<ssid>:<pass>
+  // ==========================================================
+
+  if (input.startsWith("SET_WIFI:")) {
+    int firstColon = input.indexOf(':');
+    int secondColon = input.indexOf(':', firstColon + 1);
+    if (secondColon != -1) {
+      String new_ssid = input.substring(firstColon + 1, secondColon);
+      String new_pass = input.substring(secondColon + 1);
+      new_ssid.trim();
+      new_pass.trim();
+      applyNewWiFi(new_ssid, new_pass);
+    }
     return;
   }
 

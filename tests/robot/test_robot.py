@@ -1,6 +1,6 @@
 import websocket
 
-IP = "192.168.1.85"
+IP = "192.168.1.34"
 
 print("Connecting...")
 

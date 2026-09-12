@@ -20,7 +20,7 @@ class MicController:
         Listens to the microphone until silence is detected and returns the recognized text.
         Returns an empty string if the speech couldn't be recognized.
         """
-        print("\n🎤 Listening... (Say 'exit' to quit)")
+        print("\n[Mic] Listening... (Say 'exit' to quit)")
         try:
             with self.mic as source:
                 audio_data = self.recognizer.listen(source, timeout=None, phrase_time_limit=None)
