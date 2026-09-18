@@ -1,5 +1,5 @@
 {
-  "robot_ip": "172.17.20.144",
+  "robot_ip": "10.252.106.144",
   "cam_ip": "192.168.4.1",
   "tts_engine": "chatterbox",
   "voice": "guy",
@@ -7,8 +7,15 @@
   "play_pc_audio": false,
   "enable_vision": true,
   "enable_mic": true,
-  "llm_model": "qwen2.5:3b",
+  "llm_model": "qwen2.5:7b",
   "vlm_model": "qwen3-vl:4b",
   "wifi_ssid": "AJx24",
-  "wifi_pass": "avin1236"
+  "wifi_pass": "avin1236",
+  "memory": {
+    "enabled": true,
+    "sqlite_path": "data/memory/ikru_history.db",
+    "qdrant_path": "data/memory/qdrant",
+    "recall_top_k": 3,
+    "recall_threshold": 0.55
+  }
 }

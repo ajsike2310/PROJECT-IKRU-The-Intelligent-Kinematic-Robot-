@@ -1,13 +1,11 @@
 #include "Face.h"
 #include <ESPmDNS.h>
-#include <HTTPClient.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <Wire.h>
-#include "ESP_I2S.h"
 
 Preferences preferences;
 WebServer setupServer(80);
@@ -20,7 +18,7 @@ WebServer setupServer(80);
 // DRV8833 Dual H-Bridge Motor Driver
 // 2x DC Motor
 // SSD1306 128x64 I2C OLED (driven via U8g2 through the Face library)
-// MAX98357A I2S DAC Amplifier + Speaker
+// SmartElex Digital Speaker Module (GPIO 25 Hardware PWM R2-D2 Droid Audio)
 //
 // Communication:
 // WiFi + WebSocket
@@ -47,34 +45,170 @@ WebSocketsServer webSocket(81);
 #define EN1 13
 #define EN2 33
 
-// Left motor (remapped to GPIO 18 & 19 to avoid conflict with I2S audio on GPIO 26 & 27)
-#define C1A 18
-#define C1B 19
+// Left motor (GPIO 26 & 27)
+#define C1A 26
+#define C1B 27
 
 // Right motor
 #define C2A 14
 #define C2B 12
 
 // ============================================================
-// MAX98357A / I2S AUDIO
+// ULTRASONIC SENSOR (HC-SR04 / HC-SR04P)
 // ============================================================
 
-I2SClass I2S;
+#define TRIG_PIN 18
+#define ECHO_PIN 19
 
-#define I2S_WS 25
-#define I2S_BCLK 26
-#define I2S_DOUT 27
+float currentDistanceCm = 999.0;
+float obstacleThresholdCm = 12.0;
+bool safetyBrakeEnabled = true;
+bool isMovingForward = false;
+unsigned long lastSonarTime = 0;
+const unsigned long SONAR_INTERVAL_MS = 60;
 
-#define AUDIO_SAMPLE_RATE 44100
-#define AUDIO_BUFFER_SIZE 16384
+void stopMotors();
+void updateUltrasonic();
 
-uint8_t audioBuffer[AUDIO_BUFFER_SIZE];
-char pendingAudioURL[256] = "";
-volatile bool hasAudioRequest = false;
-volatile bool isAudioPlaying = false;
-volatile bool stopAudioRequested = false;
-volatile float currentVolumeFactor = 1.0f;
-TaskHandle_t audioTaskHandle = NULL;
+// ============================================================
+// SMARTELEX DIGITAL SPEAKER / R2-D2 DROID AUDIO (PWM GLISSANDO)
+// ============================================================
+
+#define AUDIO_PIN 25
+
+struct DroidStep {
+  uint16_t startFreq; // Start frequency in Hz (0 = rest/silence)
+  uint16_t endFreq;   // End frequency in Hz (0 = rest/silence)
+  uint16_t duration;  // Duration in milliseconds
+  uint16_t pause;     // Silence pause in milliseconds
+};
+
+#define MAX_SEQUENCE_STEPS 32
+
+class SonicPlayer {
+private:
+  uint8_t _pin;
+  DroidStep _sequence[MAX_SEQUENCE_STEPS];
+  uint8_t _stepCount = 0;
+  uint8_t _currentStep = 0;
+  uint16_t _lastSetFreq = 0;
+
+  enum PlayerState {
+    IDLE,
+    PLAYING_NOTE,
+    PLAYING_PAUSE
+  };
+
+  PlayerState _state = IDLE;
+  unsigned long _stateStartTime = 0;
+
+  void setHwTone(uint16_t freq) {
+    if (freq == _lastSetFreq) return;
+    _lastSetFreq = freq;
+
+    if (freq > 0) {
+      tone(_pin, freq);
+    } else {
+      noTone(_pin);
+      digitalWrite(_pin, LOW);
+    }
+  }
+
+public:
+  SonicPlayer(uint8_t pin) : _pin(pin) {}
+
+  void begin() {
+    pinMode(_pin, OUTPUT);
+    digitalWrite(_pin, LOW);
+    noTone(_pin);
+    _state = IDLE;
+    _lastSetFreq = 0;
+  }
+
+  bool isPlaying() const {
+    return _state != IDLE;
+  }
+
+  void stop() {
+    setHwTone(0);
+    _state = IDLE;
+    _stepCount = 0;
+    _currentStep = 0;
+    _lastSetFreq = 0;
+  }
+
+  bool playSequence(const DroidStep *steps, uint8_t count) {
+    if (count == 0) return false;
+    if (count > MAX_SEQUENCE_STEPS) count = MAX_SEQUENCE_STEPS;
+
+    for (uint8_t i = 0; i < count; i++) {
+      _sequence[i] = steps[i];
+    }
+
+    _stepCount = count;
+    _currentStep = 0;
+    _state = PLAYING_NOTE;
+    _stateStartTime = millis();
+    _lastSetFreq = 0;
+
+    setHwTone(_sequence[0].startFreq);
+    return true;
+  }
+
+  // Non-blocking glissando sweep update - called in loop()
+  void update() {
+    if (_state == IDLE) return;
+
+    unsigned long now = millis();
+    unsigned long elapsed = now - _stateStartTime;
+
+    if (_state == PLAYING_NOTE) {
+      uint16_t dur = _sequence[_currentStep].duration;
+      if (elapsed < dur) {
+        uint16_t sF = _sequence[_currentStep].startFreq;
+        uint16_t eF = _sequence[_currentStep].endFreq;
+
+        if (sF == eF || sF == 0 || eF == 0) {
+          setHwTone(sF);
+        } else {
+          float progress = (float)elapsed / (float)dur;
+          uint16_t currentFreq = sF + (int)((eF - sF) * progress);
+          setHwTone(currentFreq);
+        }
+      } else {
+        setHwTone(0);
+        if (_sequence[_currentStep].pause > 0) {
+          _state = PLAYING_PAUSE;
+          _stateStartTime = now;
+        } else {
+          advanceStep(now);
+        }
+      }
+    } else if (_state == PLAYING_PAUSE) {
+      if (elapsed >= _sequence[_currentStep].pause) {
+        advanceStep(now);
+      }
+    }
+  }
+
+  void playEmotion(String emotion, float intensity = 0.5f);
+  void playConversationalChirp(String emotion);
+
+private:
+  void advanceStep(unsigned long now) {
+    _currentStep++;
+    if (_currentStep >= _stepCount) {
+      stop();
+    } else {
+      _state = PLAYING_NOTE;
+      _stateStartTime = now;
+      setHwTone(_sequence[_currentStep].startFreq);
+    }
+  }
+};
+
+SonicPlayer player(AUDIO_PIN);
+String currentActiveEmotion = "normal";
 
 // ============================================================
 // OLED MODES
@@ -647,10 +781,18 @@ void updateSpeechScroll() {
 
   int finalTextPosition = scrollY + (messageLineCount * SPEECH_LINE_HEIGHT);
 
+  // Continually play conversational droid chatter while text is scrolling on OLED
+  if (finalTextPosition >= 0 && speechFinishedTime == 0) {
+    if (!player.isPlaying()) {
+      player.playConversationalChirp(currentActiveEmotion);
+    }
+  }
+
   if (finalTextPosition < 0) {
 
     if (speechFinishedTime == 0) {
       speechFinishedTime = now;
+      player.stop();
       return;
     }
 
@@ -819,166 +961,289 @@ void applyNewWiFi(String new_ssid, String new_pass) {
 }
 
 // ============================================================
-// AUDIO STREAMING & PLAYBACK (I2S MAX98357A)
+// R2-D2 DROID EMOTION & PARALINGUISTIC SOUND SYNTHESIZER
 // ============================================================
 
-static inline uint16_t readLE16(uint8_t *p) {
-  return ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
-}
+void SonicPlayer::playEmotion(String emotion, float intensity) {
+  emotion.toLowerCase();
+  emotion.trim();
+  intensity = constrain(intensity, 0.0f, 1.0f);
 
-static inline uint32_t readLE32(uint8_t *p) {
-  return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-         ((uint32_t)p[3] << 24);
-}
+  DroidStep seq[MAX_SEQUENCE_STEPS];
+  uint8_t count = 0;
 
-bool readExact(WiFiClient &stream, uint8_t *buffer, size_t length) {
-  size_t received = 0;
-  while (received < length && !stopAudioRequested) {
-    if (stream.available()) {
-      int n = stream.read(buffer + received, length - received);
-      if (n > 0) received += n;
-    } else {
-      if (!stream.connected()) return false;
-      vTaskDelay(pdMS_TO_TICKS(1));
+  Serial.printf("[SonicPlayer] Playing: %s (intensity: %.2f)\n", emotion.c_str(), intensity);
+
+  // 1. HAPPY
+  if (emotion == "happy") {
+    float p = 1.0f + (0.25f * intensity);
+    uint16_t base = 1200 * p;
+    uint16_t mid  = 1800 * p;
+    uint16_t high = 2600 * p;
+    uint16_t top  = 3200 * p;
+    seq[count++] = {base, mid, 55, 12};
+    seq[count++] = {mid, high, 65, 12};
+    seq[count++] = {high, top, 110, 0};
+  }
+
+  // 2. GLEE / EXCITED
+  else if (emotion == "glee" || emotion == "excited") {
+    float p = 1.0f + (0.3f * intensity);
+    uint16_t b = 1400 * p;
+    seq[count++] = {b, (uint16_t)(b + 500), 35, 6};
+    seq[count++] = {(uint16_t)(b + 400), (uint16_t)(b + 1000), 35, 6};
+    seq[count++] = {(uint16_t)(b + 900), (uint16_t)(b + 1600), 45, 8};
+    seq[count++] = {(uint16_t)(b + 1200), (uint16_t)(b + 1800), 18, 4};
+    seq[count++] = {(uint16_t)(b + 1800), (uint16_t)(b + 1200), 18, 4};
+    seq[count++] = {(uint16_t)(b + 1400), (uint16_t)(b + 2200), 110, 0};
+  }
+
+  // 3. SAD
+  else if (emotion == "sad") {
+    uint16_t top    = 2400 - (uint16_t)(200 * intensity);
+    uint16_t bottom = 550 - (uint16_t)(150 * intensity);
+    uint16_t dur    = 320 + (uint16_t)(220 * intensity);
+    seq[count++] = {(uint16_t)(top - 100), top, 60, 25};
+    seq[count++] = {top, bottom, dur, 30};
+    seq[count++] = {(uint16_t)(bottom + 80), bottom, 140, 0};
+  }
+
+  // 4. SIGH (Gentle, slow descending melancholic slide)
+  else if (emotion == "sigh") {
+    uint16_t startF = 1900;
+    uint16_t endF   = 450;
+    seq[count++] = {startF, (uint16_t)(startF + 100), 60, 15};
+    seq[count++] = {(uint16_t)(startF + 100), endF, 420, 0};
+  }
+
+  // 5. GASP (Sudden sharp high-speed upward leap)
+  else if (emotion == "gasp") {
+    seq[count++] = {850, 3600, 45, 8};
+    seq[count++] = {3600, 3200, 30, 4};
+    seq[count++] = {3200, 3700, 50, 0};
+  }
+
+  // 6. GIGGLE / CHUCKLE (Playful high-frequency warbles)
+  else if (emotion == "giggle" || emotion == "chuckle") {
+    seq[count++] = {2200, 2800, 25, 8};
+    seq[count++] = {2800, 2400, 25, 8};
+    seq[count++] = {2400, 3100, 25, 8};
+    seq[count++] = {3100, 2600, 25, 8};
+    seq[count++] = {2600, 3200, 35, 0};
+  }
+
+  // 7. LAUGHTER / LAUGH (Hearty multi-burst ascending staccato chirps)
+  else if (emotion == "laughter" || emotion == "laugh") {
+    seq[count++] = {1600, 2400, 35, 12};
+    seq[count++] = {2200, 2800, 35, 12};
+    seq[count++] = {2000, 3000, 40, 15};
+    seq[count++] = {2600, 3400, 50, 8};
+    seq[count++] = {3200, 3600, 60, 0};
+  }
+
+  // 8. GROAN (Low-frequency vibrating raspy buzz)
+  else if (emotion == "groan") {
+    seq[count++] = {400, 320, 90, 15};
+    seq[count++] = {320, 240, 140, 15};
+    seq[count++] = {240, 180, 180, 0};
+  }
+
+  // 9. CLEAR_THROAT / THROAT (Crisp double mid-pitch pulse)
+  else if (emotion == "clear_throat" || emotion == "throat") {
+    seq[count++] = {1500, 1750, 35, 30};
+    seq[count++] = {1600, 1850, 45, 0};
+  }
+
+  // 10. CRY / SOB (Melancholic tremolo weeping slide)
+  else if (emotion == "cry" || emotion == "sob") {
+    seq[count++] = {1800, 1600, 80, 15};
+    seq[count++] = {1600, 1700, 60, 10};
+    seq[count++] = {1700, 1100, 180, 20};
+    seq[count++] = {1100, 600, 220, 0};
+  }
+
+  // 11. WHISPER (Delicate tiny soft micro-beeps)
+  else if (emotion == "whisper") {
+    seq[count++] = {2400, 2600, 18, 12};
+    seq[count++] = {2700, 2500, 18, 12};
+    seq[count++] = {2800, 3000, 22, 0};
+  }
+
+  // 12. SNIFF (Quick upward intake blip)
+  else if (emotion == "sniff") {
+    seq[count++] = {1300, 2300, 35, 0};
+  }
+
+  // 13. COUGH (Low staccato cough thumps)
+  else if (emotion == "cough") {
+    seq[count++] = {480, 280, 40, 30};
+    seq[count++] = {450, 250, 50, 0};
+  }
+
+  // 14. SNEEZE (Rising inhale followed by explosive release)
+  else if (emotion == "sneeze") {
+    seq[count++] = {1400, 2600, 70, 25};
+    seq[count++] = {3500, 800, 90, 0};
+  }
+
+  // 15. INHALE / EXHALE
+  else if (emotion == "inhale") {
+    seq[count++] = {1000, 2400, 200, 0};
+  } else if (emotion == "exhale") {
+    seq[count++] = {2400, 900, 220, 0};
+  }
+
+  // 16. THINKING / FOCUSED / PROCESSING
+  else if (emotion == "thinking" || emotion == "focused" || emotion == "processing") {
+    uint16_t f = 1800 + (uint16_t)(300 * intensity);
+    seq[count++] = {f, (uint16_t)(f + 150), 22, 35};
+    seq[count++] = {f, (uint16_t)(f + 150), 22, 35};
+    seq[count++] = {f, (uint16_t)(f + 150), 22, 35};
+    seq[count++] = {f, (uint16_t)(f + 150), 22, 0};
+  }
+
+  // 17. ANGRY / FURIOUS / FRUSTRATED / ANNOYED
+  else if (emotion == "angry" || emotion == "furious" || emotion == "frustrated" || emotion == "annoyed") {
+    uint16_t low_a = 350 + (uint16_t)(50 * intensity);
+    uint16_t low_b = 750 + (uint16_t)(100 * intensity);
+    seq[count++] = {low_b, low_a, 50, 10};
+    seq[count++] = {low_a, (uint16_t)(low_b + 100), 45, 12};
+    seq[count++] = {(uint16_t)(low_b + 100), (uint16_t)(low_a - 50), 60, 15};
+    if (intensity > 0.4f) {
+      seq[count++] = {2200, 3400, 35, 6};
+      seq[count++] = {3400, 2200, 35, 6};
+      seq[count++] = {2200, 3400, 60, 0};
     }
   }
-  return (received == length);
+
+  // 18. WORRIED
+  else if (emotion == "worried") {
+    seq[count++] = {1600, 1300, 70, 20};
+    seq[count++] = {1300, 1100, 90, 20};
+    seq[count++] = {1100, 850, 120, 0};
+  }
+
+  // 19. SURPRISED / SCARED
+  else if (emotion == "surprised" || emotion == "scared") {
+    uint16_t top = 3400 + (uint16_t)(600 * intensity);
+    seq[count++] = {800, top, 55, 10};
+    seq[count++] = {top, (uint16_t)(top - 400), 30, 6};
+    seq[count++] = {(uint16_t)(top - 400), top, 40, 0};
+  }
+
+  // 20. CONFUSED / SKEPTIC / SUSPICIOUS
+  else if (emotion == "confused" || emotion == "skeptic" || emotion == "suspicious") {
+    seq[count++] = {1100, 1400, 45, 25};
+    seq[count++] = {1600, 1200, 50, 30};
+    seq[count++] = {950, (uint16_t)(2600 + (400 * intensity)), 110, 0};
+  }
+
+  // 21. SLEEPY / UNIMPRESSED
+  else if (emotion == "sleepy" || emotion == "unimpressed") {
+    seq[count++] = {1800, 1500, 90, 40};
+    seq[count++] = {1500, 600, 350, 30};
+    seq[count++] = {550, 300, 160, 0};
+  }
+
+  // 22. AWE / AFFECTION
+  else if (emotion == "awe" || emotion == "affection") {
+    seq[count++] = {1200, 1600, 70, 15};
+    seq[count++] = {1500, 2200, 80, 15};
+    seq[count++] = {2200, 1900, 60, 15};
+    seq[count++] = {1900, 2800, 150, 0};
+  }
+
+  // 23. SQUINT
+  else if (emotion == "squint") {
+    seq[count++] = {1400, 1650, 40, 50};
+    seq[count++] = {1750, 1500, 40, 50};
+    seq[count++] = {1550, 1850, 45, 0};
+  }
+
+  // 24. SUCCESS / TRIUMPH
+  else if (emotion == "success" || emotion == "happy_success") {
+    float p = 1.0f + (0.2f * intensity);
+    seq[count++] = {(uint16_t)(1100 * p), (uint16_t)(1500 * p), 50, 10};
+    seq[count++] = {(uint16_t)(1500 * p), (uint16_t)(2000 * p), 55, 10};
+    seq[count++] = {(uint16_t)(2000 * p), (uint16_t)(2700 * p), 65, 12};
+    uint16_t top = 3200 * p;
+    seq[count++] = {(uint16_t)(top - 150), (uint16_t)(top + 150), 22, 2};
+    seq[count++] = {(uint16_t)(top + 150), (uint16_t)(top - 150), 22, 2};
+    seq[count++] = {top, (uint16_t)(top * 1.1f), 150, 0};
+  }
+
+  // 25. ERROR / FAILED
+  else if (emotion == "error" || emotion == "failed") {
+    seq[count++] = {700, 220, 90, 40};
+    seq[count++] = {650, 180, 120, 0};
+  }
+
+  // 26. WARNING
+  else if (emotion == "warning") {
+    uint16_t high = 2800 + (uint16_t)(400 * intensity);
+    uint16_t low  = 1800 + (uint16_t)(300 * intensity);
+    seq[count++] = {low, high, 45, 6};
+    seq[count++] = {high, low, 45, 8};
+    seq[count++] = {low, high, 45, 6};
+    seq[count++] = {high, low, 45, 0};
+  }
+
+  // 27. CANNOT_PERFORM / BLOCKED
+  else if (emotion == "cannot_perform" || emotion == "blocked") {
+    seq[count++] = {1300, 750, 110, 40};
+    seq[count++] = {900, 450, 140, 0};
+  }
+
+  // 28. DEFAULT / NORMAL / NEUTRAL
+  else {
+    seq[count++] = {1300, 1900, 50, 20};
+    seq[count++] = {1700, 2500, 80, 0};
+  }
+
+  playSequence(seq, count);
 }
 
-bool skipBytes(WiFiClient &stream, uint32_t length) {
-  uint8_t temp[64];
-  while (length > 0 && !stopAudioRequested) {
-    size_t amount = min(length, (uint32_t)sizeof(temp));
-    if (!readExact(stream, temp, amount)) return false;
-    length -= amount;
-  }
-  return (length == 0);
-}
+void SonicPlayer::playConversationalChirp(String emotion) {
+  emotion.toLowerCase();
+  DroidStep seq[4];
+  uint8_t count = 0;
 
-bool findWavData(WiFiClient &stream, uint32_t &dataSize) {
-  uint8_t header[12];
-  if (!readExact(stream, header, 12)) {
-    Serial.println("[Audio] Cannot read WAV header");
-    return false;
-  }
-
-  if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
-    Serial.println("[Audio] Invalid WAV header (not RIFF/WAVE)");
-    return false;
-  }
-
-  bool foundFmt = false;
-  while (stream.connected() && !stopAudioRequested) {
-    uint8_t chunkHeader[8];
-    if (!readExact(stream, chunkHeader, 8)) return false;
-
-    uint32_t chunkSize = readLE32(chunkHeader + 4);
-
-    if (memcmp(chunkHeader, "fmt ", 4) == 0) {
-      uint8_t fmt[16];
-      if (!readExact(stream, fmt, 16)) return false;
-
-      uint16_t format     = readLE16(fmt);
-      uint16_t channels   = readLE16(fmt + 2);
-      uint32_t sampleRate = readLE32(fmt + 4);
-      uint16_t bits       = readLE16(fmt + 14);
-
-      if (format != 1 || channels != 2 || sampleRate != 44100 || bits != 16) {
-        Serial.printf("[Audio] Unsupported format: fmt=%u, ch=%u, rate=%lu, bits=%u\n",
-                      format, channels, sampleRate, bits);
-        return false;
-      }
-
-      if (chunkSize > 16) {
-        if (!skipBytes(stream, chunkSize - 16)) return false;
-      }
-      foundFmt = true;
-
-    } else if (memcmp(chunkHeader, "data", 4) == 0) {
-      dataSize = chunkSize;
-      return foundFmt;
-
-    } else {
-      if (!skipBytes(stream, chunkSize)) return false;
+  // Generate dynamic conversational droid syllables matching the active emotion
+  int r = random(3);
+  if (emotion == "happy" || emotion == "glee" || emotion == "excited") {
+    uint16_t b = 1300 + random(600);
+    uint16_t e = b + 300 + random(500);
+    seq[count++] = {b, e, (uint16_t)(35 + random(30)), (uint16_t)(15 + random(25))};
+    if (r > 0) {
+      uint16_t h = e + 200 + random(400);
+      seq[count++] = {e, h, (uint16_t)(40 + random(40)), (uint16_t)(25 + random(40))};
+    }
+  } else if (emotion == "sad" || emotion == "worried") {
+    uint16_t b = 1600 + random(400);
+    uint16_t e = b > 500 ? b - 300 - random(300) : 500;
+    seq[count++] = {b, e, (uint16_t)(60 + random(40)), (uint16_t)(20 + random(30))};
+    if (r > 0) {
+      seq[count++] = {e, (uint16_t)(e - 150), 70, 30};
+    }
+  } else if (emotion == "angry" || emotion == "frustrated" || emotion == "annoyed" || emotion == "furious") {
+    uint16_t b = 400 + random(300);
+    uint16_t e = 250 + random(200);
+    seq[count++] = {b, e, (uint16_t)(45 + random(30)), (uint16_t)(15 + random(20))};
+    if (r > 0) {
+      seq[count++] = {2200, 2800, 30, 20};
+    }
+  } else {
+    // Normal / conversational droid chatter
+    uint16_t b = 1200 + random(700);
+    uint16_t e = b + (random(2) == 0 ? 350 : -250);
+    seq[count++] = {b, e, (uint16_t)(40 + random(35)), (uint16_t)(20 + random(35))};
+    if (r > 0) {
+      uint16_t e2 = e + 250 + random(400);
+      seq[count++] = {e, e2, (uint16_t)(45 + random(35)), (uint16_t)(25 + random(40))};
     }
   }
 
-  return false;
-}
-
-void audioPlaybackTask(void *pvParameters) {
-  while (true) {
-    if (hasAudioRequest) {
-      hasAudioRequest = false;
-      isAudioPlaying = true;
-      stopAudioRequested = false;
-
-      String url = String(pendingAudioURL);
-      Serial.print("[Audio] Connecting to: ");
-      Serial.println(url);
-
-      HTTPClient http;
-      http.begin(url);
-      int httpCode = http.GET();
-
-      if (httpCode == HTTP_CODE_OK) {
-        WiFiClient *stream = http.getStreamPtr();
-        uint32_t dataSize = 0;
-
-        if (findWavData(*stream, dataSize)) {
-          Serial.printf("[Audio] Streaming %lu bytes to I2S...\n", dataSize);
-          uint32_t remaining = dataSize;
-
-          while (remaining > 0 && stream->connected() && !stopAudioRequested) {
-            size_t maxToRead = min((uint32_t)1024, remaining);
-
-            size_t bytesRead = 0;
-            if (stream->available() > 0) {
-              int n = stream->read(audioBuffer, maxToRead);
-              if (n > 0) bytesRead = n;
-            } else {
-              vTaskDelay(pdMS_TO_TICKS(1));
-              if (stream->available() > 0) {
-                int n = stream->read(audioBuffer, maxToRead);
-                if (n > 0) bytesRead = n;
-              }
-            }
-
-            if (bytesRead == 0) {
-              if (!stream->connected()) break;
-              continue;
-            }
-
-            // Align to 4-byte stereo frame boundary (2 bytes Left + 2 bytes Right)
-            bytesRead -= (bytesRead % 4);
-            if (bytesRead == 0) continue;
-
-            if (currentVolumeFactor < 0.99f) {
-              int16_t *samples = (int16_t *)audioBuffer;
-              size_t numSamples = bytesRead / sizeof(int16_t);
-              for (size_t i = 0; i < numSamples; i++) {
-                samples[i] = (int16_t)(samples[i] * currentVolumeFactor);
-              }
-            }
-
-            I2S.write(audioBuffer, bytesRead);
-            remaining -= bytesRead;
-          }
-          Serial.println("[Audio] Finished playback");
-        } else {
-          Serial.println("[Audio] WAV parsing failed");
-        }
-      } else {
-        Serial.printf("[Audio] HTTP GET failed: %d\n", httpCode);
-      }
-
-      http.end();
-      isAudioPlaying = false;
-      stopAudioRequested = false;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
+  playSequence(seq, count);
 }
 
 // ============================================================
@@ -1042,6 +1307,83 @@ void handlePortalReset() {
 }
 
 // ============================================================
+// ULTRASONIC DISTANCE MEASUREMENT & OBSTACLE AUTO-BRAKE
+// ============================================================
+
+// 5-sample median filter to reject noise, floor bounces, and acoustic spikes
+const int SONAR_SAMPLES = 5;
+float sonarHistory[SONAR_SAMPLES] = {999.0, 999.0, 999.0, 999.0, 999.0};
+int sonarHistoryIdx = 0;
+
+float getMedianDistance() {
+  float sorted[SONAR_SAMPLES];
+  for (int i = 0; i < SONAR_SAMPLES; i++) sorted[i] = sonarHistory[i];
+  // Simple insertion sort for 5 elements
+  for (int i = 1; i < SONAR_SAMPLES; i++) {
+    float key = sorted[i];
+    int j = i - 1;
+    while (j >= 0 && sorted[j] > key) {
+      sorted[j + 1] = sorted[j];
+      j--;
+    }
+    sorted[j + 1] = key;
+  }
+  return sorted[2]; // Middle element (median)
+}
+
+void updateUltrasonic() {
+  unsigned long now = millis();
+  if (now - lastSonarTime < SONAR_INTERVAL_MS) {
+    return;
+  }
+  lastSonarTime = now;
+
+  // Clear trigger pin
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(4);
+
+  // Emit 10 microsecond HIGH pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Measure pulse duration (timeout = 25000 us = ~400 cm max range)
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 25000);
+
+  float rawDistance = 999.0;
+  if (duration > 0) {
+    // Speed of sound = 343 m/s = 0.0343 cm/us -> distance = (duration * 0.0343) / 2
+    rawDistance = (duration * 0.0343) / 2.0;
+
+    // Discard acoustic cross-talk / transducer blind zone (< 2.5 cm)
+    if (rawDistance < 2.5) {
+      rawDistance = 999.0;
+    }
+  }
+
+  // Push into median filter history buffer
+  sonarHistory[sonarHistoryIdx] = rawDistance;
+  sonarHistoryIdx = (sonarHistoryIdx + 1) % SONAR_SAMPLES;
+
+  // Compute smooth filtered distance
+  currentDistanceCm = getMedianDistance();
+
+  // Autonomous Safety Emergency Brake (uses clean filtered distance)
+  if (safetyBrakeEnabled && isMovingForward && currentDistanceCm >= 3.0 && currentDistanceCm < obstacleThresholdCm) {
+    stopMotors();
+    Serial.printf("[SAFETY] Obstacle detected at %.1f cm! Motors halted.\n", currentDistanceCm);
+
+    // Broadcast obstacle alert JSON over WebSocket
+    String alert = "{\"event\":\"obstacle_alert\",\"distance_cm\":" + String(currentDistanceCm, 1) + "}";
+    webSocket.broadcastTXT(alert);
+
+    // Visual & audio feedback
+    emotionWorried();
+    player.playEmotion("worried", 0.6);
+  }
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 
@@ -1054,6 +1396,11 @@ void setup() {
   pinMode(C1B, OUTPUT);
   pinMode(C2A, OUTPUT);
   pinMode(C2B, OUTPUT);
+
+  // Ultrasonic sensor pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  digitalWrite(TRIG_PIN, LOW);
 
   // Serial
   Serial.begin(115200);
@@ -1069,20 +1416,10 @@ void setup() {
   oledStartup();
 
   // ============================================================
-  // I2S AUDIO (MAX98357A)
+  // SMARTELEX DIGITAL SPEAKER (R2-D2 DROID AUDIO)
   // ============================================================
-  Serial.println("Starting I2S Audio...");
-  I2S.setPins(I2S_BCLK, I2S_WS, I2S_DOUT);
-  if (!I2S.begin(I2S_MODE_STD, AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
-                 I2S_SLOT_MODE_STEREO)) {
-    Serial.println("[Audio] I2S initialization FAILED!");
-  } else {
-    Serial.println("[Audio] I2S ready");
-  }
-
-  // Pin audio playback task to Core 0 (leaving Core 1 for OLED & WebSocket loops)
-  xTaskCreatePinnedToCore(audioPlaybackTask, "audioTask", 10240, NULL, 1,
-                          &audioTaskHandle, 0);
+  Serial.println("Starting SmartElex Sonic Speaker on GPIO 25...");
+  player.begin();
 
   // WiFi
   showConnecting();
@@ -1168,6 +1505,9 @@ void setup() {
   oledMode = OLED_IDLE;
   face->Expression.GoTo_Normal();
   animationLastMillis = millis();
+
+  // Friendly startup chirp once fully ready and connected
+  player.playEmotion("success", 0.6);
 }
 
 // ============================================================
@@ -1181,6 +1521,15 @@ void loop() {
 
   // WebSocket
   webSocket.loop();
+
+  // Ultrasonic distance measurement & obstacle safety brake
+  updateUltrasonic();
+
+  // Non-blocking R2-D2 glissando audio sequencer
+  player.update();
+
+  // Update speech scroll (moves text and triggers conversational droid chatter)
+  updateSpeechScroll();
 
   unsigned long now = millis();
   float dt = (now - animationLastMillis) / 1000.0;
@@ -1201,11 +1550,22 @@ void loop() {
   // Clear buffer for new frame
   u8g2.clearBuffer();
 
-  // Draw full-screen animated eyes (handles blinking, expressions, eye tracking)
+  // Draw speech box whenever it has any width
+  if (speechBoxWidth > 0) {
+    drawSpeakingText();
+  }
+
+  // Draw animated eyes (handles blinking, expressions, eye tracking)
   face->Update();
 
   // Render to OLED
   u8g2.sendBuffer();
+
+  // Intermediate audio update
+  player.update();
+
+  // Yield to FreeRTOS (prevents Watchdog Timeout and Wi-Fi drops)
+  delay(5);
 
   // Serial command listener (via USB)
   if (Serial.available()) {
@@ -1243,8 +1603,16 @@ void webSocketEvent(uint8_t client, WStype_t type, uint8_t *payload,
   case WStype_TEXT: {
     String cmd = String((char *)payload);
     cmd.trim();
+
+    if (cmd.equalsIgnoreCase("GET_DISTANCE")) {
+      String reply = "{\"type\":\"distance\",\"cm\":" + String(currentDistanceCm, 1) + "}";
+      webSocket.sendTXT(client, reply);
+      return;
+    }
+
     Serial.print("Received: ");
     Serial.println(cmd);
+
     parseCommand(cmd);
     // Reply to Python
     webSocket.sendTXT(client, "OK");
@@ -1265,35 +1633,79 @@ void parseCommand(String input) {
   input.trim();
 
   // ==========================================================
-  // DISPLAY COMMANDS (No-op now that natural voice is active)
+  // DISPLAY COMMANDS (Full OLED Scrolling Speech Box)
   // ==========================================================
 
-  if (input == "DISPLAY_OPEN" || input == "DISPLAY_CLOSE") {
+  if (input == "DISPLAY_OPEN") {
+    oledOpen();
+    return;
+  }
+
+  if (input == "DISPLAY_CLOSE") {
+    oledClose();
     return;
   }
 
   if (input.startsWith("DISPLAY:")) {
-    Serial.print("Display text (voice mode): ");
-    Serial.println(input.substring(8));
+    String message = input.substring(8);
+    oledMessage(message);
     return;
   }
 
   // ==========================================================
-  // AUDIO COMMANDS (Case-sensitive URLs)
+  // ULTRASONIC SENSOR & SAFETY COMMANDS
   // ==========================================================
 
-  if (input.startsWith("SPEAK_URL:") || input.startsWith("AUDIO:")) {
-    int idx = input.indexOf(':');
-    String url = input.substring(idx + 1);
-    url.trim();
-    strncpy(pendingAudioURL, url.c_str(), sizeof(pendingAudioURL) - 1);
-    pendingAudioURL[sizeof(pendingAudioURL) - 1] = '\0';
-    hasAudioRequest = true;
+  if (input == "GET_DISTANCE") {
+    Serial.printf("[SONAR] Distance: %.1f cm\n", currentDistanceCm);
+    String reply = "{\"type\":\"distance\",\"cm\":" + String(currentDistanceCm, 1) + "}";
+    webSocket.broadcastTXT(reply);
     return;
   }
 
-  if (input == "STOP_AUDIO") {
-    stopAudioRequested = true;
+  if (input.startsWith("SET_OBSTACLE_THRESHOLD:") || input.startsWith("THRESHOLD:")) {
+    int colonIdx = input.indexOf(':');
+    float th = input.substring(colonIdx + 1).toFloat();
+    if (th > 0) {
+      obstacleThresholdCm = th;
+      Serial.printf("[SONAR] Obstacle threshold set to %.1f cm\n", obstacleThresholdCm);
+    }
+    return;
+  }
+
+  if (input == "OBSTACLE_BRAKE_ON") {
+    safetyBrakeEnabled = true;
+    Serial.println("[SONAR] Safety auto-brake ENABLED");
+    return;
+  }
+
+  if (input == "OBSTACLE_BRAKE_OFF") {
+    safetyBrakeEnabled = false;
+    Serial.println("[SONAR] Safety auto-brake DISABLED");
+    return;
+  }
+
+  // ==========================================================
+  // AUDIO & SOUND COMMANDS
+  // ==========================================================
+
+  if (input.startsWith("SOUND:")) {
+    String payload = input.substring(6);
+    payload.trim();
+    int colonIdx = payload.indexOf(':');
+    String soundName = payload;
+    float intensity = 0.5f;
+    if (colonIdx != -1) {
+      soundName = payload.substring(0, colonIdx);
+      intensity = payload.substring(colonIdx + 1).toFloat();
+    }
+    soundName.toLowerCase();
+    player.playEmotion(soundName, intensity);
+    return;
+  }
+
+  if (input == "STOP_AUDIO" || input == "STOP_SOUND") {
+    player.stop();
     return;
   }
 
@@ -1306,8 +1718,7 @@ void parseCommand(String input) {
     int colonIdx = input.indexOf(':');
     int vol = input.substring(colonIdx + 1).toInt();
     vol = constrain(vol, 0, 100);
-    currentVolumeFactor = vol / 100.0f;
-    Serial.printf("[Audio] Firmware volume set to %d%% (factor: %.2f)\n", vol, currentVolumeFactor);
+    Serial.printf("[Audio] Firmware volume command received: %d%%\n", vol);
     return;
   }
 
@@ -1333,64 +1744,150 @@ void parseCommand(String input) {
   input.toUpperCase();
 
   // ==========================================================
-  // EMOTION COMMANDS
+  // EMOTION & EXPRESSION COMMANDS (SYNCHRONIZED OLED + R2-D2 VOICE)
   // ==========================================================
+
+  currentActiveEmotion = input;
+  currentActiveEmotion.toLowerCase();
 
   if (input == "NORMAL") {
     emotionNormal();
+    player.playEmotion("normal");
     return;
   } else if (input == "HAPPY") {
     emotionHappy();
+    player.playEmotion("happy");
     return;
   } else if (input == "GLEE") {
     emotionGlee();
+    player.playEmotion("glee");
     return;
   } else if (input == "SAD") {
     emotionSad();
+    player.playEmotion("sad");
     return;
   } else if (input == "WORRIED") {
     emotionWorried();
+    player.playEmotion("worried");
     return;
   } else if (input == "FOCUSED") {
     emotionFocused();
+    player.playEmotion("focused");
     return;
   } else if (input == "ANNOYED") {
     emotionAnnoyed();
+    player.playEmotion("annoyed");
     return;
   } else if (input == "SURPRISED") {
     emotionSurprised();
+    player.playEmotion("surprised");
     return;
   } else if (input == "SKEPTIC") {
     emotionSkeptic();
+    player.playEmotion("skeptic");
     return;
   } else if (input == "FRUSTRATED") {
     emotionFrustrated();
+    player.playEmotion("frustrated");
     return;
   } else if (input == "UNIMPRESSED") {
     emotionUnimpressed();
+    player.playEmotion("unimpressed");
     return;
   } else if (input == "SLEEPY") {
     emotionSleepy();
+    player.playEmotion("sleepy");
     return;
   } else if (input == "SUSPICIOUS") {
     emotionSuspicious();
+    player.playEmotion("suspicious");
     return;
   } else if (input == "SQUINT") {
     emotionSquint();
+    player.playEmotion("squint");
     return;
   } else if (input == "ANGRY") {
     emotionAngry();
+    player.playEmotion("angry");
     return;
   } else if (input == "FURIOUS") {
     emotionFurious();
+    player.playEmotion("furious");
     return;
   } else if (input == "SCARED") {
     emotionScared();
+    player.playEmotion("scared");
     return;
   } else if (input == "AWE") {
     emotionAwe();
+    player.playEmotion("awe");
+    return;
+  } else if (input == "SIGH") {
+    emotionWorried();
+    player.playEmotion("sigh");
+    return;
+  } else if (input == "GASP") {
+    emotionSurprised();
+    player.playEmotion("gasp");
+    return;
+  } else if (input == "GIGGLE" || input == "CHUCKLE") {
+    emotionHappy();
+    player.playEmotion("giggle");
+    return;
+  } else if (input == "LAUGH" || input == "LAUGHTER") {
+    emotionGlee();
+    player.playEmotion("laughter");
+    return;
+  } else if (input == "GROAN") {
+    emotionFrustrated();
+    player.playEmotion("groan");
+    return;
+  } else if (input == "CLEAR_THROAT" || input == "THROAT") {
+    emotionFocused();
+    player.playEmotion("clear_throat");
+    return;
+  } else if (input == "CRY" || input == "SOB") {
+    emotionSad();
+    player.playEmotion("cry");
+    return;
+  } else if (input == "WHISPER") {
+    emotionSuspicious();
+    player.playEmotion("whisper");
+    return;
+  } else if (input == "SNIFF") {
+    emotionFocused();
+    player.playEmotion("sniff");
+    return;
+  } else if (input == "COUGH") {
+    emotionAnnoyed();
+    player.playEmotion("cough");
+    return;
+  } else if (input == "SNEEZE") {
+    emotionSurprised();
+    player.playEmotion("sneeze");
+    return;
+  } else if (input == "INHALE") {
+    emotionFocused();
+    player.playEmotion("inhale");
+    return;
+  } else if (input == "EXHALE") {
+    emotionNormal();
+    player.playEmotion("exhale");
+    return;
+  } else if (input == "THINKING" || input == "PROCESSING") {
+    emotionFocused();
+    player.playEmotion("thinking");
+    return;
+  } else if (input == "SUCCESS") {
+    emotionGlee();
+    player.playEmotion("success");
+    return;
+  } else if (input == "ERROR") {
+    emotionSad();
+    player.playEmotion("error");
     return;
   }
+
 
   // ==========================================================
   // MOTOR COMMANDS
@@ -1417,6 +1914,17 @@ void parseCommand(String input) {
 // ============================================================
 
 void moveForward() {
+  if (safetyBrakeEnabled && currentDistanceCm >= 3.0 && currentDistanceCm < obstacleThresholdCm) {
+    Serial.printf("[SAFETY] Cannot move forward: obstacle detected at %.1f cm!\n", currentDistanceCm);
+    stopMotors();
+    String alert = "{\"event\":\"obstacle_blocked\",\"distance_cm\":" + String(currentDistanceCm, 1) + "}";
+    webSocket.broadcastTXT(alert);
+    emotionWorried();
+    player.playEmotion("worried", 0.5);
+    return;
+  }
+
+  isMovingForward = true;
 
   digitalWrite(EN1, HIGH);
   digitalWrite(C1A, HIGH);
@@ -1433,6 +1941,7 @@ void moveForward() {
 // ============================================================
 
 void moveBackward() {
+  isMovingForward = false;
 
   digitalWrite(EN1, HIGH);
   digitalWrite(C1A, LOW);
@@ -1449,6 +1958,7 @@ void moveBackward() {
 // ============================================================
 
 void moveLeft() {
+  isMovingForward = false;
 
   digitalWrite(EN1, HIGH);
   digitalWrite(C1A, LOW);
@@ -1465,6 +1975,7 @@ void moveLeft() {
 // ============================================================
 
 void moveRight() {
+  isMovingForward = false;
 
   digitalWrite(EN1, HIGH);
   digitalWrite(C1A, HIGH);
@@ -1481,6 +1992,7 @@ void moveRight() {
 // ============================================================
 
 void stopMotors() {
+  isMovingForward = false;
 
   digitalWrite(EN1, LOW);
   digitalWrite(EN2, LOW);

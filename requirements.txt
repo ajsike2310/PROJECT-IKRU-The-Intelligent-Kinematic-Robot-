@@ -1,4 +1,4 @@
-﻿aiofiles
+aiofiles
 aiohappyeyeballs
 aiohttp
 aiosignal
@@ -63,7 +63,7 @@ narwhals
 networkx
 nodeenv
 numba
-numpy<2.0.0,>=1.24.0
+numpy
 ollama
 omegaconf
 onnx

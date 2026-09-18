@@ -7,6 +7,8 @@ class MicController:
     """
     def __init__(self):
         self.recognizer = sr.Recognizer()
+        self.recognizer.pause_threshold = 0.3  # Extremely snappy end-of-speech detection
+        self.recognizer.non_speaking_duration = 0.2
         self.mic = sr.Microphone()
         
         print("[Audio] Initializing Microphone...")
@@ -33,3 +35,12 @@ class MicController:
         except sr.RequestError as e:
             print(f"  [STT Error: {e}]")
             return ""
+
+    def start_background_listening(self, callback):
+        """
+        Starts listening in a background thread.
+        `callback` should be a function that accepts `(recognizer, audio)`.
+        Returns a stop function that can be called to terminate the background thread.
+        """
+        # listen_in_background uses the existing recognizer and mic to spawn a daemon thread.
+        return self.recognizer.listen_in_background(self.mic, callback)

@@ -7,10 +7,12 @@ from .parser import parse_segments, parse_llm_json
 class ChatEngine:
     """
     Main conversational engine interfacing with local Ollama LLM (Qwen 2.5 3B).
+    Integrates persistent memory via MemoryManager (SQLite + Qdrant).
     """
 
-    def __init__(self, model="qwen2.5:3b"):
+    def __init__(self, model="qwen2.5:3b", memory=None):
         self.model = model
+        self.memory = memory
         self.messages = [
             {
                 "role": "system",
@@ -29,7 +31,8 @@ class ChatEngine:
 
     def ask(self, user_input, visual_context=None):
         """
-        Sends a user message to Ollama with optional injected visual context.
+        Sends a user message to Ollama with optional injected visual context
+        and recalled long-term memory.
         Returns:
             tools (list): list of tool actions dicts
             response_text (str): raw formatted response with inline emotion tags
@@ -39,14 +42,33 @@ class ChatEngine:
         if len(self.messages) > 11:
             self.messages = [self.messages[0]] + self.messages[-10:]
 
-        # Prepare content with optional visual context
+        # Build augmented input with memory context and visual observations
+        augmented_parts = []
+
+        # 1. Inject recalled long-term memories from Qdrant + SQLite facts
+        if self.memory:
+            try:
+                memory_context = self.memory.build_memory_context(user_input)
+                if memory_context:
+                    augmented_parts.append(memory_context)
+            except Exception as e:
+                print(f"[ChatEngine] Memory recall warning: {e}")
+
+        # 2. Inject visual context from camera
         if visual_context:
-            augmented_input = (
-                f"[Camera Visual Observation: {visual_context.strip()}]\n"
-                f"User: {user_input}"
-            )
-        else:
-            augmented_input = user_input
+            augmented_parts.append(f"[Camera Visual Observation: {visual_context.strip()}]")
+
+        # 3. Append the actual user message
+        augmented_parts.append(f"User: {user_input}" if augmented_parts else user_input)
+
+        augmented_input = "\n".join(augmented_parts)
+
+        # Record user message to persistent memory (non-blocking)
+        if self.memory:
+            try:
+                self.memory.record_user_message(user_input, visual_context=visual_context)
+            except Exception as e:
+                print(f"[ChatEngine] Memory record warning: {e}")
 
         self.messages.append({
             "role": "user",
@@ -79,7 +101,7 @@ class ChatEngine:
         if not segments:
             segments = [("normal", response_text)]
 
-        # Append assistant response to history
+        # Append assistant response to sliding window history
         self.messages.append({
             "role": "assistant",
             "content": json.dumps({
@@ -88,4 +110,12 @@ class ChatEngine:
             })
         })
 
+        # Record assistant response to persistent memory (non-blocking)
+        if self.memory:
+            try:
+                self.memory.record_assistant_message(response_text, tools_used=tools)
+            except Exception as e:
+                print(f"[ChatEngine] Memory record warning: {e}")
+
         return tools, response_text, segments
+

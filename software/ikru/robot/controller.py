@@ -163,6 +163,51 @@ class RobotController:
     def sing(self):
         self.send("SING")
 
+    # Distance & Obstacle Avoidance Commands
+    def get_distance(self, timeout=1.2) -> float:
+        """
+        Queries the ESP32 for the current ultrasonic distance in centimeters.
+        Returns distance in cm (e.g. 25.4), or -1.0 if sensor timed out or offline.
+        """
+        if not self.connected or not self.ws:
+            return -1.0
+        try:
+            with self._lock:
+                if not (self.connected and self.ws):
+                    return -1.0
+                self.ws.send("GET_DISTANCE")
+                self.ws.settimeout(timeout)
+                start_t = time.time()
+                while time.time() - start_t < timeout:
+                    reply = self.ws.recv()
+                    if not reply:
+                        continue
+                    if "distance" in reply:
+                        import json
+                        data = json.loads(reply)
+                        return float(data.get("cm", -1.0))
+        except Exception:
+            pass
+        finally:
+            try:
+                if self.ws:
+                    self.ws.settimeout(self.ping_timeout)
+            except Exception:
+                pass
+        return -1.0
+
+    def set_obstacle_threshold(self, cm: float):
+        """Sets the safety emergency brake threshold distance in centimeters."""
+        self.send(f"SET_OBSTACLE_THRESHOLD:{float(cm):.1f}")
+
+    def enable_obstacle_brake(self):
+        """Enables the automatic emergency stop when an obstacle is close."""
+        self.send("OBSTACLE_BRAKE_ON")
+
+    def disable_obstacle_brake(self):
+        """Disables the automatic emergency stop."""
+        self.send("OBSTACLE_BRAKE_OFF")
+
     # Display & Speech Commands
     def display(self, text):
         self.send(f"DISPLAY:{text}")
@@ -176,9 +221,17 @@ class RobotController:
         time.sleep(BOX_ANIM_DURATION_S)
 
     def play_audio(self, url):
-        """Tells ESP32 to stream and play a WAV audio URL over I2S."""
-        print(f"[Robot] Dispatched SPEAK_URL to ESP32: {url}")
-        self.send(f"SPEAK_URL:{url}")
+        """Tells ESP32 to stream and play audio."""
+        print(f"[Robot] Dispatched audio command to ESP32: {url}")
+        if url.startswith("http://") or url.startswith("https://"):
+            self.send(f"SPEAK_URL:{url}")
+        else:
+            self.send(f"SOUND:{url}")
+
+    def play_sound(self, sound_name: str, intensity: float = 0.5):
+        """Plays an authentic R2-D2 glissando frequency sweep on the SmartElex speaker."""
+        print(f"[Robot] Playing Droid Sound: {sound_name} (intensity={intensity})")
+        self.send(f"SOUND:{sound_name}:{intensity:.2f}")
 
     def stop_audio(self):
         """Stops active audio playback on ESP32."""
@@ -190,48 +243,84 @@ class RobotController:
         print(f"[Robot] Setting speaker volume to {vol}%")
         return self.send(f"VOLUME:{vol}")
 
-    def speak_segments(self, segments, audio_service=None, play_pc=None, stream_robot=True):
+    def speak_segments(self, segments, audio_service=None, play_pc=None, stream_robot=True, interrupt_event=None):
         """
-        Coordinates speech response:
-        - Synthesizes and streams natural voice audio over I2S (via AudioService).
-        - Displays full-screen animated facial expressions on ESP32 Body OLED.
-        - Synchronizes emotion transitions with the speech playback duration.
+        Coordinates instant robotic speech & expression response:
+        - Fires instant R2-D2 glissando chirps & warbles on the SmartElex digital speaker.
+        - Synchronizes full-screen animated facial expressions on the ESP32 OLED.
+        - Zero audio latency (<5ms) without requiring a live audio network streaming server.
         """
         if not segments:
             return
 
-        svc = audio_service or getattr(self, "audio_service", None)
-        full_text = " ".join(txt for _, txt in segments if txt).strip()
-
-        audio_url = None
-        duration = 0.0
-
-        if svc and full_text:
-            print(f"[Robot] Synthesizing speech: \"{full_text}\" (play_pc={play_pc})...")
-            audio_url = svc.synthesize(full_text, play_pc=play_pc)
-            duration = getattr(svc, "last_duration", 0.0)
-            print(f"[Robot] Speech ready ({duration:.2f}s): {audio_url}")
-
-        # Start streaming natural voice via I2S to ESP32 speaker
-        if stream_robot and audio_url:
-            self.play_audio(audio_url)
-
-        # Distribute playback duration across emotion segments with buffering
-        total_len = max(1, sum(len(txt.strip()) for _, txt in segments if txt))
-        effective_duration = max(duration, len(full_text) * 0.08)
+        import re
+        sound_tag_pattern = re.compile(
+            r'\[(sigh|gasp|giggle|chuckle|laugh|laughter|groan|clear_throat|throat|cry|sob|whisper|sniff|cough|sneeze|inhale|exhale|thinking|processing|success|error)\]',
+            re.IGNORECASE
+        )
 
         for emotion, text in segments:
-            seg_len = len(text.strip()) if text else 1
-            seg_time = max(1.2, (seg_len / total_len) * effective_duration)
-            print(f"[Robot] Displaying OLED Expression: [{emotion.upper()}] ({seg_time:.1f}s)")
-            self.set_emotion(emotion)
-            time.sleep(seg_time)
+            if interrupt_event and interrupt_event.is_set():
+                break
+
+            text_str = text.strip() if text else ""
+            
+            # Extract clean display text (strip tags)
+            clean_text = re.sub(r'\[[^\]]*\]', '', text_str).strip()
+            clean_text = re.sub(r'\s+', ' ', clean_text)
+
+            # Check if this segment contains an inline paralinguistic sound tag
+            sound_match = sound_tag_pattern.search(text_str) if text_str else None
+            sound_tag = sound_match.group(1).lower() if sound_match else None
+
+            if sound_tag:
+                tag_method = getattr(self, sound_tag, None)
+                if tag_method and callable(tag_method):
+                    print(f"[Robot] Triggering Paralinguistic Sound: [{sound_tag.upper()}]")
+                    tag_method()
+                else:
+                    self.play_sound(sound_tag)
+            else:
+                print(f"[Robot] Triggering Expression & Sound: [{emotion.upper()}]")
+                self.set_emotion(emotion)
+
+            # Send text to OLED speech box and let droid chatter play for the full duration of the scroll
+            if clean_text:
+                self.display(clean_text)
+                scroll_time = calculate_speech_scroll_time(clean_text)
+                
+                # Sleep in chunks to allow rapid interruption
+                chunk = 0.1
+                elapsed = 0.0
+                while elapsed < scroll_time:
+                    if interrupt_event and interrupt_event.is_set():
+                        break
+                    time.sleep(chunk)
+                    elapsed += chunk
+            else:
+                # No text, just pause slightly for the emotion/sound
+                chunk = 0.1
+                elapsed = 0.0
+                while elapsed < 1.2:
+                    if interrupt_event and interrupt_event.is_set():
+                        break
+                    time.sleep(chunk)
+                    elapsed += chunk
+
+            if interrupt_event and interrupt_event.is_set():
+                self.stop_audio()
+                self.send("DISPLAY_CLOSE")
+                break
 
         # Brief post-speech settling pause before returning to calm normal
-        time.sleep(0.4)
+        if interrupt_event and interrupt_event.is_set():
+            self.normal()
+            return
+
+        time.sleep(0.3)
         self.normal()
 
-    # Emotions
+    # Visual Emotions (Triggers both OLED Eye Animation & Droid Tone on ESP32)
     def set_emotion(self, emotion):
         method = getattr(self, emotion.lower(), None)
         if method and callable(method):
@@ -257,6 +346,27 @@ class RobotController:
     def furious(self): self.send("FURIOUS")
     def scared(self): self.send("SCARED")
     def awe(self): self.send("AWE")
+
+    # Paralinguistic Vocal Sounds
+    def sigh(self): self.send("SIGH")
+    def gasp(self): self.send("GASP")
+    def giggle(self): self.send("GIGGLE")
+    def chuckle(self): self.send("GIGGLE")
+    def laugh(self): self.send("LAUGH")
+    def laughter(self): self.send("LAUGHTER")
+    def groan(self): self.send("GROAN")
+    def clear_throat(self): self.send("CLEAR_THROAT")
+    def cry(self): self.send("CRY")
+    def sob(self): self.send("CRY")
+    def whisper(self): self.send("WHISPER")
+    def sniff(self): self.send("SNIFF")
+    def cough(self): self.send("COUGH")
+    def sneeze(self): self.send("SNEEZE")
+    def inhale(self): self.send("INHALE")
+    def exhale(self): self.send("EXHALE")
+    def thinking(self): self.send("THINKING")
+    def success(self): self.send("SUCCESS")
+    def error(self): self.send("ERROR")
 
     # Compatibility Aliases
     def set_face(self, emotion):
