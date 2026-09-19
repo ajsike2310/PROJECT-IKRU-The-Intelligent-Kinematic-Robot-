@@ -29,10 +29,10 @@ class ChatEngine:
             }
         ]
 
-    def ask(self, user_input, visual_context=None):
+    def ask(self, user_input, visual_context=None, sensor_context=None):
         """
-        Sends a user message to Ollama with optional injected visual context
-        and recalled long-term memory.
+        Sends a user message to Ollama with optional injected visual context,
+        sensor context (e.g. proximity), and recalled long-term memory.
         Returns:
             tools (list): list of tool actions dicts
             response_text (str): raw formatted response with inline emotion tags
@@ -58,7 +58,11 @@ class ChatEngine:
         if visual_context:
             augmented_parts.append(f"[Camera Visual Observation: {visual_context.strip()}]")
 
-        # 3. Append the actual user message
+        # 3. Inject raw sensor context (proximity, etc.) — passed through as-is
+        if sensor_context:
+            augmented_parts.append(sensor_context.strip())
+
+        # 4. Append the actual user message
         augmented_parts.append(f"User: {user_input}" if augmented_parts else user_input)
 
         augmented_input = "\n".join(augmented_parts)
@@ -118,4 +122,5 @@ class ChatEngine:
                 print(f"[ChatEngine] Memory record warning: {e}")
 
         return tools, response_text, segments
+
 

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Avin\\\\Desktop\\\\Avin\\\\projects\\\\PROJECT-IKRU-The-Intelligent-Kinematic-Robot-\" -Recurse -File -Name)"
+    ]
+  }
+}

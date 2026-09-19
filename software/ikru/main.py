@@ -19,7 +19,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from ikru.chat import ChatEngine
-from ikru.robot import RobotController
+from ikru.robot import RobotController, IdleManager, ProximityMonitor, AutonomousBrain
 from ikru.vision import VisionReceiver, VLMClient
 from ikru.audio import AudioService
 from ikru.memory import MemoryManager
@@ -263,6 +263,20 @@ def main():
     if robot:
         robot.set_volume(args.volume)
 
+    idle_manager = IdleManager(robot)
+    idle_manager.start()
+
+    proximity_monitor = ProximityMonitor(robot, idle_manager=idle_manager)
+    proximity_monitor.start()
+    robot.proximity_monitor = proximity_monitor
+
+    # Hardware-level safety: enable obstacle brake so autonomous roaming can't crash IKRU
+    try:
+        robot.set_obstacle_threshold(12.0)
+        robot.enable_obstacle_brake()
+    except Exception as e:
+        print(f"[Robot] Warning: could not enable obstacle brake ({e}).")
+
     # Initialize Microphone if enabled
     use_mic = enable_mic
     mic_controller = None
@@ -286,6 +300,19 @@ def main():
             print("[Vision] System ready.")
         except Exception as e:
             print(f"[Vision] Could not start vision receiver: {e}")
+
+    # Autonomous Brain — spontaneous LLM-driven thoughts, movement, and commentary
+    autonomous_brain = AutonomousBrain(
+        robot=robot,
+        memory=memory,
+        vision=vision,
+        vlm=vlm,
+        idle_manager=idle_manager,
+        proximity_monitor=proximity_monitor,
+        audio_service=audio_service,
+        model=LLM_MODEL,
+    )
+    autonomous_brain.start()
 
     import queue
     mic_queue = queue.Queue()
@@ -348,15 +375,19 @@ def main():
             if not user_input:
                 continue
 
+            # Notify IdleManager of activity (pauses idle animations)
+            idle_manager.notify_activity()
+            # Pause background systems while IKRU is thinking / speaking / moving
+            proximity_monitor.pause()
+            autonomous_brain.pause()
+
             # Check for any exit phrases
             exit_phrases = ["exit", "tata", "good bye", "goodbye", "bye bye", "shut down", "see you", "sleep", "power off", "quit", "later", "catch you later", "turn off", "adios", "cya"]
             if any(phrase in user_input.lower().strip() for phrase in exit_phrases):
                 # Sleepy Exit Routine (just animation and sound)
                 print("\n[IKRU] Going to sleep...")
                 robot.sleepy()
-                # If there's a specific snoring sound, play it (or fallback to sigh)
                 robot.play_sound("SIGH")
-                # Brief pause so sound plays before disconnect
                 time.sleep(1.0)
                 break
 
@@ -396,8 +427,17 @@ def main():
                     if visual_context:
                         print(f"[Vision] Context: {visual_context}")
 
+            # Collect proximity sensor context for LLM injection
+            prox_context = proximity_monitor.get_sensor_context()
+            if prox_context:
+                print(f"[Proximity] Context: {prox_context}")
+
             # Query Chat LLM
-            tools, response_text, segments = chat.ask(user_input, visual_context=visual_context)
+            tools, response_text, segments = chat.ask(
+                user_input,
+                visual_context=visual_context,
+                sensor_context=prox_context,
+            )
             
             # Stop the filler timer in case we finished before 10s
             thinking_event.set()
@@ -410,13 +450,23 @@ def main():
 
             if interrupt_event.is_set():
                 print("  [Exit command detected, interrupting...]")
-                # We skip executing tools if we were interrupted by an exit command
+                # Resume background systems so they're not stuck paused after this skip
+                idle_manager.notify_speech_done()
+                proximity_monitor.resume()
+                autonomous_brain.resume()
+                # Skip executing tools if we were interrupted by an exit command
                 continue
 
-            # Execute movement actions
+            # Execute movement actions & sequences
             for t in tools:
                 action = t.get("action", "").lower()
                 duration = float(t.get("duration", 0))
+
+                if action in ["play_sequence", "sequence"]:
+                    seq_name = t.get("sequence", t.get("name", "celebrate"))
+                    print(f"Executing Sequence: {seq_name}")
+                    robot.play_sequence(seq_name)
+                    continue
 
                 method = getattr(robot, action, None)
                 if method and callable(method):
@@ -437,6 +487,20 @@ def main():
 
             # Brief pause to let robot audio finish so mic doesn't re-trigger
             time.sleep(0.6)
+            
+            # Flush the mic queue of anything captured while IKRU was speaking or executing
+            if use_mic and mic_controller:
+                import queue
+                while not mic_queue.empty():
+                    try:
+                        mic_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+            # Resume idle, proximity reflexes, and autonomous thoughts now that all activity is done
+            idle_manager.notify_speech_done()
+            proximity_monitor.resume()
+            autonomous_brain.resume()
 
     # Run chat in thread while pumping vision display on main thread
     chat_thread = threading.Thread(target=chat_loop, daemon=True)
@@ -458,6 +522,11 @@ def main():
             audio_service.stop()
         if vision:
             vision.stop()
+        idle_manager.stop()
+        if proximity_monitor:
+            proximity_monitor.stop()
+        if autonomous_brain:
+            autonomous_brain.stop()
         robot.close()
 
 

@@ -1633,6 +1633,32 @@ void parseCommand(String input) {
   input.trim();
 
   // ==========================================================
+  // EYE LOOK & BLINK COMMANDS
+  // ==========================================================
+
+  if (input == "BLINK") {
+    face->DoBlink();
+    return;
+  }
+
+  if (input.startsWith("LOOK:")) {
+    int firstColon = input.indexOf(':');
+    int secondColon = input.indexOf(':', firstColon + 1);
+    if (secondColon != -1) {
+      float lx = input.substring(firstColon + 1, secondColon).toFloat();
+      float ly = input.substring(secondColon + 1).toFloat();
+      face->Look.LookAt(lx, ly);
+    }
+    return;
+  }
+
+  if (input == "LOOK_LEFT") { face->LookLeft(); return; }
+  if (input == "LOOK_RIGHT") { face->LookRight(); return; }
+  if (input == "LOOK_FRONT") { face->LookFront(); return; }
+  if (input == "LOOK_TOP") { face->LookTop(); return; }
+  if (input == "LOOK_BOTTOM") { face->LookBottom(); return; }
+
+  // ==========================================================
   // DISPLAY COMMANDS (Full OLED Scrolling Speech Box)
   // ==========================================================
 

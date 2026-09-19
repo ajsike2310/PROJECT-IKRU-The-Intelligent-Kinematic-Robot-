@@ -130,11 +130,37 @@ class RobotController:
             self._handle_disconnect()
 
     # Movement Commands
-    def forward(self, duration=0):
+    def forward(self, duration=0, check_proximity=True):
+        if duration <= 0:
+            self.send("FORWARD")
+            return
+
         self.send("FORWARD")
-        if duration > 0:
-            time.sleep(duration)
-            self.stop()
+        remaining = float(duration)
+
+        while remaining > 0:
+            if check_proximity and hasattr(self, "proximity_monitor") and self.proximity_monitor:
+                dist = self.proximity_monitor.get_distance()
+                if 0.0 < dist < 12.0:
+                    print(f"[Robot] Obstacle detected at {dist:.1f} cm! Pausing forward movement...")
+                    self.stop()
+                    self.worried()
+
+                    # Wait for obstacle to clear
+                    while True:
+                        time.sleep(0.15)
+                        dist = self.proximity_monitor.get_distance()
+                        if dist <= 0.0 or dist >= 14.0:
+                            print("[Robot] Path cleared! Resuming forward movement...")
+                            self.send("FORWARD")
+                            self.happy()
+                            break
+
+            chunk = min(0.1, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
+
+        self.stop()
 
     def backward(self, duration=0):
         self.send("BACKWARD")
@@ -162,6 +188,25 @@ class RobotController:
 
     def sing(self):
         self.send("SING")
+
+    def spin_left(self, duration=0):
+        self.left(duration)
+
+    def spin_right(self, duration=0):
+        self.right(duration)
+
+    def wiggle(self, duration=0.8):
+        step_t = max(0.1, duration / 4.0)
+        self.left(step_t)
+        self.right(step_t * 2)
+        self.left(step_t)
+        self.stop()
+
+    def play_sequence(self, sequence_name_or_list):
+        """Plays a multi-modal recorded emotion sequence by name or step list."""
+        from .sequences import SequenceRunner
+        runner = SequenceRunner(self)
+        return runner.play_sequence(sequence_name_or_list)
 
     # Distance & Obstacle Avoidance Commands
     def get_distance(self, timeout=1.2) -> float:
@@ -346,6 +391,24 @@ class RobotController:
     def furious(self): self.send("FURIOUS")
     def scared(self): self.send("SCARED")
     def awe(self): self.send("AWE")
+
+    # Eye Look & Blink Commands
+    def blink(self): self.send("BLINK")
+    def look_at(self, x: float, y: float): self.send(f"LOOK:{x:.2f}:{y:.2f}")
+    def look_left(self): self.send("LOOK_LEFT")
+    def look_right(self): self.send("LOOK_RIGHT")
+    def look_front(self): self.send("LOOK_FRONT")
+    def look_top(self): self.send("LOOK_TOP")
+    def look_bottom(self): self.send("LOOK_BOTTOM")
+
+    # Idle Yawn Micro-expression
+    def yawn(self):
+        """Triggers a realistic yawning idle micro-expression."""
+        self.sleepy()
+        self.exhale()
+        time.sleep(1.2)
+        self.normal()
+        self.look_front()
 
     # Paralinguistic Vocal Sounds
     def sigh(self): self.send("SIGH")

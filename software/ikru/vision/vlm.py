@@ -19,7 +19,10 @@ class VLMClient:
 
         prompt = custom_prompt or (
             "Describe what you see in the image in 1-2 short sentences. "
-            "Focus on people, clothing colors, objects, and setting. Be factual and concise."
+            "Focus on people, clothing colors, objects, and setting. Be factual and concise. "
+            "There is a 5x5 white grid drawn over the image. Use this grid to estimate how close "
+            "the main object/person is. If it takes up 1-2 squares, it is far. If it takes up 4-9 squares, "
+            "it is medium distance. If it takes up 12+ squares, it is extremely close. Mention the estimated distance."
         )
 
         try:

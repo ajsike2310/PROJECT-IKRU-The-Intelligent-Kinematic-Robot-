@@ -9,6 +9,7 @@ class MicController:
         self.recognizer = sr.Recognizer()
         self.recognizer.pause_threshold = 0.3  # Extremely snappy end-of-speech detection
         self.recognizer.non_speaking_duration = 0.2
+        self.recognizer.dynamic_energy_threshold = False  # Prevent deafness after loud noises
         self.mic = sr.Microphone()
         
         print("[Audio] Initializing Microphone...")
@@ -44,3 +45,5 @@ class MicController:
         """
         # listen_in_background uses the existing recognizer and mic to spawn a daemon thread.
         return self.recognizer.listen_in_background(self.mic, callback)
+
+

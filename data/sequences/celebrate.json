@@ -1,0 +1,23 @@
+[
+  {
+    "emotion": "glee",
+    "sound": "laughter",
+    "movement": "spin_left",
+    "duration": 0.6,
+    "gaze": [0.0, 0.2]
+  },
+  {
+    "emotion": "happy",
+    "sound": "giggle",
+    "movement": "spin_right",
+    "duration": 0.6,
+    "gaze": [0.0, -0.1]
+  },
+  {
+    "emotion": "glee",
+    "sound": "success",
+    "movement": "stop",
+    "duration": 0.5,
+    "gaze": [0.0, 0.0]
+  }
+]
