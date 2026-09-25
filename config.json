@@ -1,5 +1,7 @@
 {
-  "robot_ip": "10.252.106.144",
+  "network_mode": "ikru-cam",
+  "robot_ip": "192.168.4.200",
+  "robot_last_ip": "192.168.4.200",
   "cam_ip": "192.168.4.1",
   "tts_engine": "chatterbox",
   "voice": "guy",
@@ -7,10 +9,16 @@
   "play_pc_audio": false,
   "enable_vision": true,
   "enable_mic": true,
+  "mic": {
+    "vad": "silero",
+    "vad_threshold": 0.5,
+    "silence_ms": 500,
+    "max_utterance_s": 12,
+    "device_index": null
+  },
   "llm_model": "qwen2.5:7b",
   "vlm_model": "qwen3-vl:4b",
-  "wifi_ssid": "AJx24",
-  "wifi_pass": "avin1236",
+  "llm_keep_alive": "30m",
   "memory": {
     "enabled": true,
     "sqlite_path": "data/memory/ikru_history.db",

@@ -214,5 +214,8 @@ src/models/
 # Python cache
 src/__pycache__/
 
+# Local secrets (Wi-Fi credentials) — merged over config.json at runtime
+config.local.json
+
 # Reference Codebase
 referencereachycode/

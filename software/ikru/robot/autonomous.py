@@ -78,6 +78,7 @@ class AutonomousBrain:
         proximity_monitor=None,
         audio_service=None,
         model="qwen2.5:3b",
+        keep_alive="30m",
         min_interval=MIN_INTERVAL_S,
         max_interval=MAX_INTERVAL_S,
         vision_probability=VISION_SAMPLE_PROBABILITY,
@@ -90,6 +91,7 @@ class AutonomousBrain:
         self.proximity_monitor = proximity_monitor
         self.audio_service     = audio_service
         self.model             = model
+        self.keep_alive        = keep_alive
         self.min_interval      = min_interval
         self.max_interval      = max_interval
         self.vision_probability = vision_probability
@@ -241,6 +243,7 @@ class AutonomousBrain:
                     {"role": "user",   "content": trigger_text},
                 ],
                 format="json",
+                keep_alive=self.keep_alive,
             )
             raw = response["message"]["content"].strip()
             return parse_llm_json(raw)

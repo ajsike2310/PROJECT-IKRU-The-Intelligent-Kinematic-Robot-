@@ -1,6 +1,8 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include "esp_netif.h"
+#include "dhcpserver/dhcpserver.h"
 
 // =============================================================================
 // PROJECT IKRU — HEAD UNIT (VISION STREAMER)
@@ -130,11 +132,26 @@ bool initCamera() {
     return true;
 }
 
+// IKRU-CAM has no internet. If its DHCP server offers a gateway, a PC on two
+// Wi-Fi adapters (home + IKRU-CAM) may route internet traffic here and go offline.
+// Offering no router keeps the PC's internet on home Wi-Fi.
+void disableGatewayOffer() {
+    esp_netif_t* ap = WiFi.AP.netif();
+    if (!ap) return;
+    dhcps_offer_t offer = 0;  // clears OFFER_ROUTER
+    esp_netif_dhcps_stop(ap);
+    esp_err_t err = esp_netif_dhcps_option(ap, ESP_NETIF_OP_SET, ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,
+                                           &offer, sizeof(offer));
+    esp_netif_dhcps_start(ap);
+    Serial.printf("[WIFI] DHCP gateway offer disabled: %s\n", err == ESP_OK ? "yes" : esp_err_to_name(err));
+}
+
 void startAP() {
     WiFi.mode(WIFI_AP);
     WiFi.setSleep(false);
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
+    disableGatewayOffer();
 
     Serial.println("[WIFI] Head AP Started!");
     Serial.printf("  SSID     : %s\n", AP_SSID);

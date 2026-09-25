@@ -13,6 +13,11 @@ import sys
 import time
 import json
 import argparse
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "software"))
+from ikru.net import Diagnosis, find_robot
+from ikru.net.netinfo import HUB_ROBOT_IP
 
 try:
     import websocket
@@ -31,30 +36,29 @@ def render_distance_bar(dist_cm, max_cm=100, bar_length=30):
     return f"[{bar}] {dist_cm:5.1f} cm"
 
 
-def test_ultrasonic(ip="192.168.1.34", port=81):
-    candidates = [ip, "ikru-robot.local", "ikru.local", "192.168.1.42", "192.168.4.1"]
+def test_ultrasonic(ip=HUB_ROBOT_IP, port=81):
     ws = None
     connected_ip = None
 
     print("\n" + "=" * 65)
     print("  PROJECT IKRU — Ultrasonic Sensor & Safety Brake Diagnostic")
     print("=" * 65)
-    
-    for candidate in candidates:
-        if not candidate:
-            continue
-        ws_url = f"ws://{candidate}:{port}/"
-        try:
-            print(f"Connecting to ESP32 at {ws_url}...")
-            ws = websocket.create_connection(ws_url, timeout=3.0)
-            connected_ip = candidate
-            print(f"[+] Connected successfully to {candidate}!\n")
-            break
-        except Exception:
-            continue
 
-    if not ws:
-        print("[-] Could not connect to ESP32. Please verify your robot's IP and Wi-Fi.")
+    result = find_robot([ip], port=port)
+    if isinstance(result, Diagnosis):
+        print(f"[-] Could not find the robot: {result.message}")
+        for hint in result.hints:
+            print(f"    -> {hint}")
+        return
+
+    ws_url = f"ws://{result.ip}:{port}/"
+    try:
+        print(f"Connecting to ESP32 at {ws_url}...")
+        ws = websocket.create_connection(ws_url, timeout=3.0)
+        connected_ip = result.ip
+        print(f"[+] Connected successfully to {result.describe()}!\n")
+    except Exception as e:
+        print(f"[-] Found {result.ip} but the WebSocket failed: {e}")
         return
 
     print("Select Mode:")
@@ -162,7 +166,7 @@ def test_ultrasonic(ip="192.168.1.34", port=81):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="IKRU Ultrasonic Diagnostic")
-    parser.add_argument("--ip", default="192.168.1.34", help="ESP32 Controller IP")
+    parser.add_argument("--ip", default=HUB_ROBOT_IP, help="ESP32 Controller IP")
     parser.add_argument("--port", type=int, default=81, help="WebSocket Port (default: 81)")
     args = parser.parse_args()
 

@@ -2,6 +2,8 @@ import time
 import threading
 import websocket
 from .protocol import calculate_speech_scroll_time, BOX_ANIM_DURATION_S
+from ..net import Diagnosis, find_robot
+from ..net.netinfo import HUB_ROBOT_IP
 
 
 class RobotController:
@@ -10,13 +12,19 @@ class RobotController:
     DRV8833 motors, OLED eye animations, and speech text box.
     """
 
+    RECONNECT_BACKOFF_S = (5, 10, 20, 30)
+
     def __init__(
         self,
-        ip="192.168.1.34",
+        ip=HUB_ROBOT_IP,
         port=81,
         auto_reconnect=True,
         ping_interval=5,
         ping_timeout=3,
+        extra_hosts=None,
+        on_connect=None,
+        discovery_timeout=3.0,
+        connect_now=True,
         **kwargs
     ):
         self.ip = ip
@@ -24,69 +32,63 @@ class RobotController:
         self.auto_reconnect = auto_reconnect
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
+        self.extra_hosts = list(extra_hosts or [])
+        self.on_connect = on_connect
+        self.discovery_timeout = discovery_timeout
+        self.last_result = None  # RobotFound or Diagnosis from the latest attempt
         self.ws = None
         self.connected = False
         self._running = True
         self._lock = threading.Lock()
+        self._connect_lock = threading.Lock()
 
-        self._connect(silent=False)
+        if connect_now:
+            self._connect(silent=False)
 
         # Start background heartbeat & auto-reconnect worker
         self._bg_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._bg_thread.start()
 
     def _connect(self, silent=False):
-        import socket
-        candidates = []
-        if self.ip:
-            candidates.append(self.ip)
-        
-        # Add mDNS hostnames first
-        for host in ["ikru-robot.local", "ikru.local", "ikru-robot", "ikru"]:
-            if host not in candidates:
-                candidates.append(host)
+        with self._connect_lock:
+            if self.connected:
+                return True
 
-        # Try mDNS socket resolution to get active IP if possible
-        for host in ["ikru-robot.local", "ikru.local"]:
-            try:
-                resolved_ip = socket.gethostbyname(host)
-                if resolved_ip and resolved_ip not in candidates:
-                    candidates.insert(0, resolved_ip)
-            except Exception:
-                pass
-
-        # Fallback known static IP candidates
-        for candidate in ["192.168.1.42", "192.168.1.34", "192.168.4.2", "192.168.4.1", "192.168.1.37", "192.168.1.40"]:
-            if candidate not in candidates:
-                candidates.append(candidate)
-
-        for target_ip in candidates:
-            try:
+            if not silent:
+                print(f"[Robot] Searching for robot (hint: {self.ip})...")
+            result = find_robot([self.ip] + self.extra_hosts, port=self.port, timeout=self.discovery_timeout)
+            self.last_result = result
+            if isinstance(result, Diagnosis):
                 if not silent:
-                    print(f"[Robot] Trying ws://{target_ip}:{self.port}...")
-                timeout_s = 4.0 if target_ip in (self.ip, "ikru-robot.local") else 1.5
+                    print(f"[Robot] Not found: {result.message}")
+                return False
+
+            try:
                 new_ws = websocket.create_connection(
-                    f"ws://{target_ip}:{self.port}",
-                    timeout=timeout_s,
+                    f"ws://{result.ip}:{self.port}",
+                    timeout=3.0,
                     ping_interval=self.ping_interval,
                     ping_timeout=self.ping_timeout,
                     http_proxy_host=None,
                     http_proxy_port=None
                 )
-                with self._lock:
-                    self.ws = new_ws
-                    self.ip = target_ip
-                    self.connected = True
-                print(f"[Robot] WebSocket connected successfully to {self.ip}!")
-                return True
-            except Exception:
-                pass
+            except Exception as e:
+                if not silent:
+                    print(f"[Robot] Found {result.ip} but WebSocket handshake failed: {e}")
+                return False
 
-        if not silent:
-            print(f"[Robot] Connection failed on candidates {candidates}. Robot body/OLED offline.")
-        with self._lock:
-            self.connected = False
-        return False
+            with self._lock:
+                self.ws = new_ws
+                self.ip = result.ip
+                self.connected = True
+            print(f"[Robot] Connected to {result.describe()}")
+
+            if self.on_connect:
+                try:
+                    self.on_connect(result.ip)
+                except Exception as e:
+                    print(f"[Robot] on_connect callback error: {e}")
+            return True
 
     def _handle_disconnect(self):
         with self._lock:
@@ -99,23 +101,28 @@ class RobotController:
             self.connected = False
 
     def _heartbeat_loop(self):
-        """Continuously sends low-overhead ping frames and automatically reconnects if offline."""
+        """Pings while connected; reconnects with backoff while offline. Logs only on state changes."""
+        attempt = 0
         while self._running:
-            time.sleep(self.ping_interval)
-            if not self._running:
-                break
-
             if self.connected and self.ws:
+                time.sleep(self.ping_interval)
+                if not self._running:
+                    break
                 try:
                     with self._lock:
                         if self.ws:
                             self.ws.ping()
                 except Exception as e:
-                    print(f"[Robot] Keep-alive ping failed ({e}). Reconnecting in background...")
+                    print(f"[Robot] Lost link to {self.ip} ({e}). Reconnecting in background...")
                     self._handle_disconnect()
-            elif not self.connected and self.auto_reconnect:
-                # Attempt silent reconnection in background
-                self._connect(silent=True)
+                    attempt = 0
+            elif self.auto_reconnect:
+                time.sleep(self.RECONNECT_BACKOFF_S[min(attempt, len(self.RECONNECT_BACKOFF_S) - 1)])
+                if not self._running:
+                    break
+                attempt = 0 if self._connect(silent=True) else attempt + 1
+            else:
+                time.sleep(self.ping_interval)
 
     def send(self, cmd):
         """Sends a raw text command to the ESP32 Body controller."""
@@ -362,7 +369,7 @@ class RobotController:
             self.normal()
             return
 
-        time.sleep(0.3)
+        time.sleep(0.1)
         self.normal()
 
     # Visual Emotions (Triggers both OLED Eye Animation & Droid Tone on ESP32)
@@ -438,8 +445,17 @@ class RobotController:
     def speak(self, url, duration=0):
         self.play_audio(url)
 
-    def connect(self):
-        self._connect(silent=False)
+    def connect(self, silent=False):
+        return self._connect(silent=silent)
+
+    # Boot-screen protocol: the body shows its setup animation until SETUP_DONE
+    def setup_status(self, text):
+        """Shows a short PC-side progress line on the robot's setup screen."""
+        self.send(f"SETUP:{text[:20]}")
+
+    def setup_done(self):
+        """Ends the robot's setup screen: ready animation, then the face wakes up."""
+        self.send("SETUP_DONE")
 
     def close(self):
         self._running = False

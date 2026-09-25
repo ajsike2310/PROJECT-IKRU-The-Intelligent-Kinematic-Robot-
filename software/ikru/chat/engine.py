@@ -10,15 +10,24 @@ class ChatEngine:
     Integrates persistent memory via MemoryManager (SQLite + Qdrant).
     """
 
-    def __init__(self, model="qwen2.5:3b", memory=None):
+    def __init__(self, model="qwen2.5:3b", memory=None, keep_alive="30m"):
         self.model = model
         self.memory = memory
+        self.keep_alive = keep_alive
         self.messages = [
             {
                 "role": "system",
                 "content": SYSTEM_PROMPT
             }
         ]
+
+    def warm_up(self):
+        """Loads the model into memory so the first reply doesn't pay the load time."""
+        try:
+            ollama.generate(model=self.model, prompt="", keep_alive=self.keep_alive)
+            print(f"[ChatEngine] {self.model} loaded and kept warm ({self.keep_alive}).")
+        except Exception as e:
+            print(f"[ChatEngine] Warm-up skipped ({e}).")
 
     def clear_history(self):
         """Resets conversational memory back to initial system prompt."""
@@ -84,7 +93,8 @@ class ChatEngine:
             response = ollama.chat(
                 model=self.model,
                 messages=self.messages,
-                format="json"
+                format="json",
+                keep_alive=self.keep_alive,
             )
             assistant_raw = response["message"]["content"].strip()
             tools, response_text = parse_llm_json(assistant_raw)
@@ -93,7 +103,8 @@ class ChatEngine:
             try:
                 fallback_res = ollama.chat(
                     model=self.model,
-                    messages=self.messages
+                    messages=self.messages,
+                    keep_alive=self.keep_alive,
                 )
                 assistant_raw = fallback_res["message"]["content"].strip()
                 tools, response_text = parse_llm_json(assistant_raw)

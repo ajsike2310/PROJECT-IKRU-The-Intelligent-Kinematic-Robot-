@@ -1,14 +1,13 @@
 #include "Face.h"
 #include <ESPmDNS.h>
 #include <Preferences.h>
-#include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
+#include <WiFiUdp.h>
 #include <Wire.h>
 
 Preferences preferences;
-WebServer setupServer(80);
 
 // ============================================================
 // IKRU DESK COMPANION ROBOT
@@ -35,23 +34,86 @@ WebServer setupServer(80);
 const char *fallback_ssid = "IKRU-CAM";
 const char *fallback_pass = "ikru@potato";
 
+// Fixed address on the IKRU-CAM hub (kept outside the head's softAP DHCP pool)
+const IPAddress HUB_ROBOT_IP(192, 168, 4, 200);
+const IPAddress HUB_GATEWAY(192, 168, 4, 1);
+const IPAddress HUB_SUBNET(255, 255, 255, 0);
+
+// LAN discovery beacon — the PC listens on UDP 4210 to find the robot
+WiFiUDP beaconUdp;
+const uint16_t BEACON_PORT = 4210;
+const unsigned long BEACON_INTERVAL_MS = 2000;
+const unsigned long WIFI_REJOIN_MS = 20000;
+unsigned long lastBeaconMillis = 0;
+unsigned long wifiLostMillis = 0;
+
 WebSocketsServer webSocket(81);
+
+// The PC announces "IKRU-PC|<ip>" on UDP 4211 once it has joined IKRU-CAM
+WiFiUDP pcUdp;
+const uint16_t PC_ANNOUNCE_PORT = 4211;
+const unsigned long PC_PRESENCE_MS = 4000;
+unsigned long lastPcSeenMillis = 0;
+
+// Network the robot falls back to (saved in NVS) if the hub doesn't show up
+String savedSsid = "";
+String savedPass = "";
+bool tryingSaved = false;
+unsigned long wifiAttemptStart = 0;
+const unsigned long HUB_ATTEMPT_MS = 30000;
+const unsigned long SAVED_ATTEMPT_MS = 15000;
+
+// ============================================================
+// SETUP SCREEN STAGES
+//
+// BOOT -> HUB (find IKRU-CAM) -> JOINED -> WAIT_PC (PC joins IKRU-CAM)
+//      -> LINK (PC connected, loading) -> READY -> DONE (face)
+// ============================================================
+
+enum SetupStage {
+  SETUP_BOOT,
+  SETUP_HUB,
+  SETUP_JOINED,
+  SETUP_WAIT_PC,
+  SETUP_LINK,
+  SETUP_READY,
+  SETUP_DONE
+};
+
+SetupStage setupStage = SETUP_BOOT;
+unsigned long setupStageStart = 0;
+unsigned long lastClientMillis = 0;
+String setupStatus = "";  // PC progress line, set by SETUP:<text>
+
+const unsigned long BOOT_ANIM_MS = 2200;
+const unsigned long JOINED_ANIM_MS = 1500;
+const unsigned long READY_ANIM_MS = 1800;
+const unsigned long LINK_TIMEOUT_MS = 120000;  // PC never sent SETUP_DONE -> wake up anyway
+const unsigned long PC_LOST_MS = 3000;
 
 // ============================================================
 // MOTOR PINS
 // ============================================================
 
-// Enable pins
-#define EN1 13
-#define EN2 33
+// DRV8833 module (IN1-IN4, EEP, ULT)
+//   IN1 = GPIO26, IN2 = GPIO27  -> left motor  (OUT1 / OUT2)
+//   IN3 = GPIO14, IN4 = GPIO12  -> right motor (OUT3 / OUT4)
+//   EEP = GPIO13  (nSLEEP: HIGH = driver awake)
+//   ULT = GPIO32  (nFAULT, optional: LOW on over-current / over-heat / low VM)
+// Speed = PWM on the IN pins:
+//   forward IN_A=PWM IN_B=0 | reverse IN_A=0 IN_B=PWM | brake IN_A=IN_B=1 | coast both 0
+#define MOTOR_IN1 26
+#define MOTOR_IN2 27
+#define MOTOR_IN3 14
+#define MOTOR_IN4 12
+#define MOTOR_EEP 13
+#define MOTOR_EEP_ALT 33   // old second enable line; kept HIGH so either EEP wiring works
+#define MOTOR_FAULT 32
 
-// Left motor (GPIO 26 & 27)
-#define C1A 26
-#define C1B 27
-
-// Right motor
-#define C2A 14
-#define C2B 12
+const uint32_t MOTOR_PWM_FREQ = 20000;  // 20 kHz: silent, within DRV8833 limits
+const uint8_t  MOTOR_PWM_BITS = 8;
+int motorSpeedPct = 100;                // drive speed for all moves (0-100)
+bool motorFaultActive = false;
 
 // ============================================================
 // ULTRASONIC SENSOR (HC-SR04 / HC-SR04P)
@@ -68,6 +130,8 @@ unsigned long lastSonarTime = 0;
 const unsigned long SONAR_INTERVAL_MS = 60;
 
 void stopMotors();
+void driveMotors(int leftPct, int rightPct);
+void checkMotorFault();
 void updateUltrasonic();
 
 // ============================================================
@@ -311,8 +375,6 @@ unsigned long animationLastMillis = 0;
 // ============================================================
 
 void oledStartup();
-
-void showConnecting();
 
 void showWiFiConnected();
 
@@ -851,31 +913,7 @@ void oledStartup() {
   face->RandomBehavior = false;
   face->RandomLook = false;
 
-  // Show startup banner via U8g2
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_ncenB14_tr);
-  u8g2.drawStr(30, 20, "IKRU");
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(22, 36, "The Desk Robot");
-  u8g2.drawStr(30, 50, "Powered by");
-  u8g2.setFont(u8g2_font_ncenB14_tr);
-  u8g2.drawStr(10, 64, "POTATOES");
-  u8g2.sendBuffer();
-
-  delay(1500);
-}
-
-// ============================================================
-// CONNECTING SCREEN
-// ============================================================
-
-void showConnecting() {
-
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(0, 20, "Connecting to WiFi...");
-  u8g2.drawStr(0, 38, "Please wait");
-  u8g2.sendBuffer();
+  // The boot banner is drawn by the setup screen (SETUP_BOOT stage)
 }
 
 // ============================================================
@@ -886,16 +924,79 @@ void showWiFiConnected() {
 
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tr);
-  u8g2.drawStr(0, 14, "WiFi Connected");
-  u8g2.drawStr(0, 30, WiFi.localIP().toString().c_str());
+  u8g2.drawStr(0, 14, "WiFi Connected!");
+  u8g2.drawStr(0, 30, "IP Address:");
+  u8g2.drawStr(0, 48, WiFi.localIP().toString().c_str());
   u8g2.sendBuffer();
 
-  delay(500);
+  delay(4000);
 }
 
 // ============================================================
 // DYNAMIC WIFI CONFIGURATION (NVS + RECONNECT)
 // ============================================================
+
+// Starts joining a network in STA mode (non-blocking).
+// IKRU-CAM gets the fixed hub IP, anything else uses DHCP.
+void beginStation(const char *ssid, const char *pass) {
+  if (strcmp(ssid, fallback_ssid) == 0) {
+    WiFi.config(HUB_ROBOT_IP, HUB_GATEWAY, HUB_SUBNET);
+  } else {
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  }
+  WiFi.begin(ssid, pass);
+  wifiAttemptStart = millis();
+}
+
+// Joins a network and blocks until connected or out of retries (used by SET_WIFI).
+bool connectStation(const char *ssid, const char *pass, int maxRetries) {
+  beginStation(ssid, pass);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < maxRetries) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  WiFi.disconnect();
+  delay(100);
+  return false;
+}
+
+void startMdns() {
+  MDNS.end();
+  if (MDNS.begin("ikru-robot")) {
+    MDNS.addService("ws", "tcp", 81);
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("[mDNS] Responder active: ikru-robot.local");
+  }
+}
+
+// Discovery beacon + background re-join (non-blocking, called from loop())
+void updateNetwork() {
+  unsigned long now = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiLostMillis = 0;
+    if (now - lastBeaconMillis >= BEACON_INTERVAL_MS) {
+      lastBeaconMillis = now;
+      String msg = "IKRU-ROBOT|" + WiFi.localIP().toString() + "|" + WiFi.SSID() +
+                   "|" + String(WiFi.RSSI()) + "|ws81";
+      beaconUdp.beginPacket(IPAddress(255, 255, 255, 255), BEACON_PORT);
+      beaconUdp.print(msg);
+      beaconUdp.endPacket();
+    }
+  } else if (wifiLostMillis == 0) {
+    wifiLostMillis = now;
+  } else if (now - wifiLostMillis >= WIFI_REJOIN_MS) {
+    Serial.println("[WiFi] Link down for 20s, forcing re-join...");
+    WiFi.reconnect();
+    wifiLostMillis = now;
+  }
+}
 
 void applyNewWiFi(String new_ssid, String new_pass) {
   Serial.println();
@@ -918,17 +1019,8 @@ void applyNewWiFi(String new_ssid, String new_pass) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  WiFi.begin(new_ssid.c_str(), new_pass.c_str());
 
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 25) {
-    delay(500);
-    Serial.print(".");
-    retries++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println();
+  if (connectStation(new_ssid.c_str(), new_pass.c_str(), 25)) {
     Serial.println("Connected!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
@@ -940,9 +1032,9 @@ void applyNewWiFi(String new_ssid, String new_pass) {
     preferences.end();
     Serial.println("[WiFi] Saved credentials to flash memory (NVS).");
 
+    startMdns();
     showWiFiConnected();
   } else {
-    Serial.println();
     Serial.println("WiFi connect failed! Reverting to fallback...");
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tr);
@@ -951,13 +1043,378 @@ void applyNewWiFi(String new_ssid, String new_pass) {
     u8g2.sendBuffer();
     delay(1500);
 
-    WiFi.begin(fallback_ssid, fallback_pass);
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
+    // Bounded retry — updateNetwork() keeps re-joining in the background if the hub is down
+    if (connectStation(fallback_ssid, fallback_pass, 16)) {
+      startMdns();
+      showWiFiConnected();
+    } else {
+      Serial.println("[WiFi] IKRU-CAM hub unreachable. Will keep retrying in background.");
+      WiFi.begin(fallback_ssid, fallback_pass);
     }
-    showWiFiConnected();
   }
+}
+
+// ============================================================
+// SETUP SCREEN (non-blocking, drawn every loop until SETUP_DONE)
+//
+// Top row: 4 progress pips  BOOT - HUB - PC - LINK
+// Middle:  stage animation
+// Bottom:  status line
+// ============================================================
+
+void setSetupStage(SetupStage stage) {
+  setupStage = stage;
+  setupStageStart = millis();
+
+  switch (stage) {
+  case SETUP_HUB:
+    Serial.println("[Setup] Finding IKRU-CAM hub...");
+    break;
+  case SETUP_JOINED:
+    Serial.print("[Setup] Joined ");
+    Serial.print(WiFi.SSID());
+    Serial.print(" as ");
+    Serial.println(WiFi.localIP());
+    startMdns();
+    player.playEmotion("happy", 0.3);
+    break;
+  case SETUP_WAIT_PC:
+    Serial.println("[Setup] Waiting for the PC to join IKRU-CAM...");
+    break;
+  case SETUP_LINK:
+    Serial.println("[Setup] PC found. Waiting for it to finish loading...");
+    player.playEmotion("normal", 0.4);
+    break;
+  case SETUP_READY:
+    Serial.println("[Setup] READY");
+    player.playEmotion("success", 0.6);
+    break;
+  default:
+    break;
+  }
+}
+
+// Closes the setup screen: eyes open from small to full size.
+void finishSetup() {
+  setupStage = SETUP_DONE;
+  lastClientMillis = millis();
+  setupStatus = "";
+
+  oledMode = OLED_IDLE;
+  speechBoxWidth = 0.0;
+  speechBoxEntering = false;
+  speechBoxExiting = false;
+  speechBoxPersist = false;
+
+  currentEyeScale = 0.3;
+  targetEyeScale = 1.0;
+  currentEyeX = targetEyeX = 64.0;
+  currentEyeY = targetEyeY = 32.0;
+  face->Expression.GoTo_Happy();
+  face->DoBlink();
+  animationLastMillis = millis();
+}
+
+bool pcPresent() {
+  unsigned long now = millis();
+  bool announced = lastPcSeenMillis != 0 && now - lastPcSeenMillis < PC_PRESENCE_MS;
+  return announced || webSocket.connectedClients() > 0;
+}
+
+// Reads "IKRU-PC|<ip>" announcements from the PC (UDP 4211).
+void checkPcAnnounce() {
+  int size = pcUdp.parsePacket();
+  if (!size) return;
+  char buf[48];
+  int len = pcUdp.read(buf, sizeof(buf) - 1);
+  if (len <= 0) return;
+  buf[len] = '\0';
+  if (strncmp(buf, "IKRU-PC|", 8) == 0) {
+    if (lastPcSeenMillis == 0 || millis() - lastPcSeenMillis >= PC_PRESENCE_MS) {
+      Serial.printf("[Setup] PC announced from %s\n", buf + 8);
+    }
+    lastPcSeenMillis = millis();
+  }
+}
+
+// Stage transitions. Called every loop while setup is running.
+void updateSetupStage() {
+  unsigned long now = millis();
+  unsigned long t = now - setupStageStart;
+  bool online = WiFi.status() == WL_CONNECTED;
+
+  // Losing Wi-Fi at any point sends us back to finding the hub
+  if (!online && setupStage >= SETUP_JOINED && setupStage <= SETUP_LINK) {
+    tryingSaved = false;
+    wifiAttemptStart = now;
+    setSetupStage(SETUP_HUB);
+    return;
+  }
+
+  switch (setupStage) {
+
+  case SETUP_BOOT:
+    if (t >= BOOT_ANIM_MS) setSetupStage(online ? SETUP_JOINED : SETUP_HUB);
+    break;
+
+  case SETUP_HUB:
+    if (online) {
+      setSetupStage(SETUP_JOINED);
+    } else if (!tryingSaved && savedSsid.length() > 0 &&
+               now - wifiAttemptStart >= HUB_ATTEMPT_MS) {
+      // Hub hasn't appeared: give the saved network a turn, then go back to the hub
+      Serial.printf("[WiFi] Hub not found. Trying saved network: %s\n", savedSsid.c_str());
+      tryingSaved = true;
+      WiFi.disconnect();
+      delay(100);
+      beginStation(savedSsid.c_str(), savedPass.c_str());
+    } else if (tryingSaved && now - wifiAttemptStart >= SAVED_ATTEMPT_MS) {
+      tryingSaved = false;
+      WiFi.disconnect();
+      delay(100);
+      beginStation(fallback_ssid, fallback_pass);
+    }
+    break;
+
+  case SETUP_JOINED:
+    if (t >= JOINED_ANIM_MS) setSetupStage(pcPresent() ? SETUP_LINK : SETUP_WAIT_PC);
+    break;
+
+  case SETUP_WAIT_PC:
+    if (pcPresent()) setSetupStage(SETUP_LINK);
+    break;
+
+  case SETUP_LINK:
+    if (!pcPresent() && t > PC_PRESENCE_MS) {
+      setupStatus = "";
+      setSetupStage(SETUP_WAIT_PC);
+    } else if (t >= LINK_TIMEOUT_MS) {
+      setSetupStage(SETUP_READY);
+    }
+    break;
+
+  case SETUP_READY:
+    if (t >= READY_ANIM_MS) finishSetup();
+    break;
+
+  default:
+    break;
+  }
+}
+
+// After setup: if the PC goes away, go back to the "Waiting for PC" screen.
+void watchPcLink() {
+  unsigned long now = millis();
+  if (webSocket.connectedClients() > 0) {
+    lastClientMillis = now;
+  } else if (now - lastClientMillis >= PC_LOST_MS) {
+    Serial.println("[Setup] PC link lost.");
+    stopMotors();
+    player.stop();
+    setupStatus = "";
+    setSetupStage(WiFi.status() == WL_CONNECTED ? SETUP_WAIT_PC : SETUP_HUB);
+  }
+}
+
+// ---------------- drawing helpers ----------------
+
+void drawCentered(int y, const char *text) {
+  int w = u8g2.getStrWidth(text);
+  u8g2.drawStr((128 - w) / 2, y, text);
+}
+
+// Progress pips: done = filled, current = pulsing ring, upcoming = small ring.
+void drawSetupPips(int current, unsigned long now) {
+  const int xs[4] = {16, 48, 80, 112};
+  const int y = 5;
+  for (int i = 0; i < 4; i++) {
+    if (i < 3) {
+      int x0 = xs[i] + 5;
+      int x1 = xs[i + 1] - 5;
+      if (i < current) {
+        u8g2.drawHLine(x0, y, x1 - x0);
+      } else {
+        for (int x = x0; x < x1; x += 4) u8g2.drawPixel(x, y);
+      }
+    }
+    if (i < current) {
+      u8g2.drawDisc(xs[i], y, 3);
+    } else if (i == current) {
+      u8g2.drawCircle(xs[i], y, 3 + ((now / 250) % 2));
+      u8g2.drawDisc(xs[i], y, 1);
+    } else {
+      u8g2.drawCircle(xs[i], y, 2);
+    }
+  }
+}
+
+// Small robot face (left) with an occasional blink.
+void drawRobotIcon(int x, int y, unsigned long now) {
+  u8g2.drawRFrame(x, y, 24, 20, 4);
+  bool blink = (now % 2600) < 140;
+  if (blink) {
+    u8g2.drawHLine(x + 5, y + 9, 5);
+    u8g2.drawHLine(x + 14, y + 9, 5);
+  } else {
+    u8g2.drawRBox(x + 5, y + 6, 5, 7, 1);
+    u8g2.drawRBox(x + 14, y + 6, 5, 7, 1);
+  }
+}
+
+// Small monitor (right).
+void drawPcIcon(int x, int y) {
+  u8g2.drawRFrame(x, y, 26, 17, 2);
+  u8g2.drawBox(x + 10, y + 17, 6, 3);
+  u8g2.drawHLine(x + 6, y + 20, 14);
+}
+
+void drawSetupScreen() {
+  unsigned long now = millis();
+  unsigned long t = now - setupStageStart;
+  char line[32];
+
+  u8g2.clearBuffer();
+  u8g2.setDrawColor(1);
+  u8g2.setFontMode(1);
+
+  int pip = 0;
+  if (setupStage == SETUP_HUB || setupStage == SETUP_JOINED) pip = 1;
+  else if (setupStage == SETUP_WAIT_PC) pip = 2;
+  else if (setupStage == SETUP_LINK) pip = 3;
+  else if (setupStage == SETUP_READY) pip = 4;
+  drawSetupPips(pip, now);
+
+  switch (setupStage) {
+
+  // --- 1. Logo wipes open from the centre, then a loading bar fills
+  case SETUP_BOOT: {
+    float p = min(1.0f, (float)t / (BOOT_ANIM_MS * 0.4f));
+    int reveal = (int)(64 * (1.0f - (1.0f - p) * (1.0f - p)));
+    u8g2.setFont(u8g2_font_ncenB14_tr);
+    u8g2.setClipWindow(64 - reveal, 12, 64 + reveal, 40);
+    drawCentered(34, "IKRU");
+    u8g2.setMaxClipWindow();
+
+    float bar = min(1.0f, (float)t / (float)BOOT_ANIM_MS);
+    u8g2.drawRFrame(24, 40, 80, 6, 2);
+    u8g2.drawBox(26, 42, (int)(76 * bar), 2);
+
+    u8g2.setFont(u8g2_font_6x10_tr);
+    drawCentered(60, "powered by potatoes");
+    break;
+  }
+
+  // --- 2. Wi-Fi arcs radiate while searching for the hub
+  case SETUP_HUB: {
+    const int cx = 64, cy = 44;
+    int phase = (t / 300) % 5;  // 0..3 arcs, then a pause
+    u8g2.drawDisc(cx, cy, 2);
+    for (int i = 1; i <= 3; i++) {
+      if (phase >= i) {
+        u8g2.drawCircle(cx, cy, 7 * i, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
+      }
+    }
+    u8g2.setFont(u8g2_font_6x10_tr);
+    if (tryingSaved) {
+      snprintf(line, sizeof(line), "Trying %.14s", savedSsid.c_str());
+      drawCentered(60, line);
+    } else {
+      drawCentered(60, (t / 2500) % 2 ? "Is the head on?" : "Finding IKRU-CAM");
+    }
+    break;
+  }
+
+  // --- 3. Check mark draws itself inside a growing ring
+  case SETUP_JOINED: {
+    const int cx = 64, cy = 30;
+    float p = min(1.0f, (float)t / 400.0f);
+    u8g2.drawCircle(cx, cy, (int)(4 + 10 * p));
+    float c = constrain(((float)t - 300.0f) / 400.0f, 0.0f, 1.0f);
+    if (c > 0) {
+      float c1 = min(1.0f, c * 2.0f);
+      u8g2.drawLine(cx - 6, cy, cx - 6 + (int)(4 * c1), cy + (int)(4 * c1));
+      if (c > 0.5f) {
+        float c2 = (c - 0.5f) * 2.0f;
+        u8g2.drawLine(cx - 2, cy + 4, cx - 2 + (int)(8 * c2), cy + 4 - (int)(9 * c2));
+      }
+    }
+    u8g2.setFont(u8g2_font_6x10_tr);
+    if (t < 750) {
+      snprintf(line, sizeof(line), "On %.16s", WiFi.SSID().c_str());
+    } else {
+      snprintf(line, sizeof(line), "%s", WiFi.localIP().toString().c_str());
+    }
+    drawCentered(60, line);
+    break;
+  }
+
+  // --- 4. Robot calls out towards the PC (dots travel one way)
+  case SETUP_WAIT_PC: {
+    drawRobotIcon(8, 20, now);
+    drawPcIcon(94, 20);
+    int offset = (t / 35) % 18;
+    for (int x = 36 + offset; x < 90; x += 18) {
+      u8g2.drawDisc(x, 29, 1);
+    }
+    u8g2.setFont(u8g2_font_6x10_tr);
+    if ((t / 2500) % 2) {
+      snprintf(line, sizeof(line), "%s", WiFi.localIP().toString().c_str());
+      drawCentered(60, line);
+    } else {
+      drawCentered(60, "Waiting for PC");
+    }
+    break;
+  }
+
+  // --- 5. Linked: solid cable with data flowing both ways + PC progress
+  case SETUP_LINK: {
+    drawRobotIcon(8, 20, now);
+    drawPcIcon(94, 20);
+    u8g2.drawHLine(34, 29, 58);
+    int a = (t / 20) % 54;
+    u8g2.drawBox(35 + a, 27, 3, 5);
+    u8g2.drawBox(88 - a, 27, 3, 5);
+
+    u8g2.setFont(u8g2_font_6x10_tr);
+    int dots = (t / 400) % 4;
+    const char *status = setupStatus.length() > 0 ? setupStatus.c_str() : "PC found";
+    snprintf(line, sizeof(line), "%.17s%.*s", status, dots, "...");
+    // Centre on the text without dots so it doesn't jump as they animate
+    u8g2.drawStr((128 - u8g2.getStrWidth(status)) / 2, 60, line);
+    break;
+  }
+
+  // --- 6. Big check + READY!
+  case SETUP_READY: {
+    float p = min(1.0f, (float)t / 300.0f);
+    u8g2.drawDisc(64, 26, (int)(12 * p));
+    if (p >= 1.0f) {
+      u8g2.setDrawColor(0);
+      u8g2.drawLine(58, 26, 62, 30);
+      u8g2.drawLine(59, 26, 63, 30);
+      u8g2.drawLine(62, 30, 70, 21);
+      u8g2.drawLine(63, 30, 71, 21);
+      u8g2.setDrawColor(1);
+    }
+    u8g2.setFont(u8g2_font_ncenB14_tr);
+    if ((t / 250) % 2 || t > 1000) drawCentered(60, "READY!");
+    break;
+  }
+
+  default:
+    break;
+  }
+
+  u8g2.sendBuffer();
+}
+
+// Commands the robot still obeys while its setup screen is up
+// (face, sound, display and drive commands wait for SETUP_DONE).
+bool allowedDuringSetup(const String &cmd) {
+  return cmd == "STOP" || cmd == "GET_DISTANCE" || cmd.equalsIgnoreCase("GET_IP") ||
+         cmd.startsWith("SET_WIFI:") || cmd.startsWith("SET_OBSTACLE_THRESHOLD:") ||
+         cmd.startsWith("THRESHOLD:") || cmd.startsWith("OBSTACLE_BRAKE_") ||
+         cmd.startsWith("VOLUME:") || cmd.startsWith("SET_VOLUME:");
 }
 
 // ============================================================
@@ -1246,65 +1703,7 @@ void SonicPlayer::playConversationalChirp(String emotion) {
   playSequence(seq, count);
 }
 
-// ============================================================
-// WIFI SETUP WEB PORTAL (Dynamic NVS Configuration)
-// ============================================================
 
-void handlePortalRoot() {
-  int n = WiFi.scanNetworks();
-  String options = "";
-  for (int i = 0; i < n; ++i) {
-    String ssid = WiFi.SSID(i);
-    int32_t rssi = WiFi.RSSI(i);
-    options += "<option value='" + ssid + "'>" + ssid + " (" + String(rssi) + " dBm)</option>";
-  }
-  if (n == 0) {
-    options = "<option value=''>No networks found</option>";
-  }
-
-  String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
-                "<style>body{font-family:sans-serif;padding:20px;background:#121212;color:#fff;max-width:400px;margin:auto;}"
-                "select,input,button{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;border-radius:6px;border:1px solid #444;background:#222;color:#fff;font-size:15px;}"
-                "button{background:#007acc;font-weight:bold;border:none;cursor:pointer;}"
-                ".card{background:#1e1e1e;padding:20px;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,0.5);}</style></head><body>"
-                "<div class='card'><h2>IKRU Wi-Fi Setup</h2>"
-                "<form action='/save' method='POST'>"
-                "<label>Select Wi-Fi Network:</label>"
-                "<select name='ssid_select' onchange='if(this.value) document.getElementById(\"ssid_manual\").value=this.value;'>"
-                "<option value=''>-- Select Network --</option>" + options + "</select>"
-                "<label>Or Type SSID:</label>"
-                "<input type='text' id='ssid_manual' name='ssid' placeholder='Network SSID' required>"
-                "<label>Password:</label>"
-                "<input type='password' name='pass' placeholder='Wi-Fi Password'>"
-                "<button type='submit'>Save & Connect</button></form>"
-                "<br><a href='/' style='color:#007acc;text-decoration:none;'>Rescan Networks</a></div></body></html>";
-  setupServer.send(200, "text/html", html);
-}
-
-void handlePortalSave() {
-  if (setupServer.hasArg("ssid")) {
-    String s = setupServer.arg("ssid");
-    String p = setupServer.arg("pass");
-    preferences.begin("ikru_wifi", false);
-    preferences.putString("ssid", s);
-    preferences.putString("pass", p);
-    preferences.end();
-    setupServer.send(200, "text/html", "<html><body style='background:#121212;color:#fff;font-family:sans-serif;padding:20px;'><h3>Wi-Fi Credentials Saved!</h3><p>Restarting ESP32 and connecting...</p></body></html>");
-    delay(1000);
-    ESP.restart();
-  } else {
-    setupServer.send(400, "text/plain", "Missing SSID");
-  }
-}
-
-void handlePortalReset() {
-  preferences.begin("ikru_wifi", false);
-  preferences.clear();
-  preferences.end();
-  setupServer.send(200, "text/html", "<html><body><h3>Saved Wi-Fi Cleared! Restarting...</h3></body></html>");
-  delay(1000);
-  ESP.restart();
-}
 
 // ============================================================
 // ULTRASONIC DISTANCE MEASUREMENT & OBSTACLE AUTO-BRAKE
@@ -1389,13 +1788,19 @@ void updateUltrasonic() {
 
 void setup() {
 
-  // Motor pins
-  pinMode(EN1, OUTPUT);
-  pinMode(EN2, OUTPUT);
-  pinMode(C1A, OUTPUT);
-  pinMode(C1B, OUTPUT);
-  pinMode(C2A, OUTPUT);
-  pinMode(C2B, OUTPUT);
+  // Motor driver (DRV8833): keep it asleep until the IN pins are held in brake
+  pinMode(MOTOR_EEP, OUTPUT);
+  pinMode(MOTOR_EEP_ALT, OUTPUT);
+  digitalWrite(MOTOR_EEP, LOW);
+  digitalWrite(MOTOR_EEP_ALT, LOW);
+  pinMode(MOTOR_FAULT, INPUT_PULLUP);
+  ledcAttach(MOTOR_IN1, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  ledcAttach(MOTOR_IN2, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  ledcAttach(MOTOR_IN3, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  ledcAttach(MOTOR_IN4, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  stopMotors();
+  digitalWrite(MOTOR_EEP, HIGH);
+  digitalWrite(MOTOR_EEP_ALT, HIGH);
 
   // Ultrasonic sensor pins
   pinMode(TRIG_PIN, OUTPUT);
@@ -1421,112 +1826,84 @@ void setup() {
   Serial.println("Starting SmartElex Sonic Speaker on GPIO 25...");
   player.begin();
 
-  // WiFi
-  showConnecting();
-
-  Serial.println("Connecting to WiFi...");
-
+  // WiFi: start joining the IKRU-CAM hub. The setup screen (loop) animates
+  // each stage and falls back to the saved network if the hub never appears.
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
 
-  // Load saved Wi-Fi from NVS Flash
   preferences.begin("ikru_wifi", true);
-  String saved_ssid = preferences.getString("ssid", "");
-  String saved_pass = preferences.getString("pass", "");
+  savedSsid = preferences.getString("ssid", "");
+  savedPass = preferences.getString("pass", "");
   preferences.end();
+  if (savedSsid == fallback_ssid) savedSsid = "";
 
-  if (saved_ssid.length() > 0) {
-    Serial.print("[WiFi] Connecting using saved NVS credentials: ");
-    Serial.println(saved_ssid);
-    WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
-
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 25) {
-      delay(500);
-      Serial.print(".");
-      retries++;
-    }
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nTrying fallback AP (IKRU-CAM)...");
-    WiFi.begin(fallback_ssid, fallback_pass);
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 15) {
-      delay(500);
-      Serial.print(".");
-      retries++;
-    }
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[WiFi] Could not connect to any network. Starting Setup Portal: IKRU-SETUP");
-    WiFi.disconnect();
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("IKRU-SETUP", "12345678");
-    Serial.print("[WiFi] AP IP address: ");
-    Serial.println(WiFi.softAPIP());
-
-    setupServer.on("/", HTTP_GET, handlePortalRoot);
-    setupServer.on("/save", HTTP_POST, handlePortalSave);
-    setupServer.on("/reset", HTTP_GET, handlePortalReset);
-    setupServer.begin();
-
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tr);
-    u8g2.drawStr(0, 14, "AP: IKRU-SETUP");
-    u8g2.drawStr(0, 30, "Pass: 12345678");
-    u8g2.drawStr(0, 48, "IP: 192.168.4.1");
-    u8g2.sendBuffer();
-    delay(1500);
-  } else {
-    Serial.println();
-    Serial.println("Connected!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-
-    if (MDNS.begin("ikru-robot")) {
-      MDNS.addService("ws", "tcp", 81);
-      MDNS.addService("http", "tcp", 80);
-      Serial.println("[mDNS] Responder active: ikru-robot.local");
-    }
-
-    showWiFiConnected();
-  }
+  Serial.println("[WiFi] Joining IKRU-CAM hub (fixed IP 192.168.4.200)...");
+  beginStation(fallback_ssid, fallback_pass);
 
   // WebSocket
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
-
   Serial.println("WebSocket Server Started");
 
-  // Initial emotion
-  oledMode = OLED_IDLE;
+  // Listen for the PC's "I'm on the hub" announcements
+  pcUdp.begin(PC_ANNOUNCE_PORT);
+
   face->Expression.GoTo_Normal();
   animationLastMillis = millis();
 
-  // Friendly startup chirp once fully ready and connected
-  player.playEmotion("success", 0.6);
+  setSetupStage(SETUP_BOOT);
+  player.playEmotion("inhale", 0.5);
 }
 
 // ============================================================
 // MAIN LOOP
 // ============================================================
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    setupServer.handleClient();
+void pollSerial() {
+  if (Serial.available()) {
+    String serialCmd = Serial.readStringUntil('\n');
+    serialCmd.trim();
+    if (serialCmd.length() > 0) {
+      Serial.print("[Serial] Received: ");
+      Serial.println(serialCmd);
+      parseCommand(serialCmd);
+    }
   }
+}
+
+void loop() {
 
   // WebSocket
   webSocket.loop();
 
+  // Discovery beacon + Wi-Fi re-join watchdog
+  updateNetwork();
+
+  // PC "I'm on the hub" announcements
+  checkPcAnnounce();
+
   // Ultrasonic distance measurement & obstacle safety brake
   updateUltrasonic();
 
+  // DRV8833 nFAULT line
+  checkMotorFault();
+
   // Non-blocking R2-D2 glissando audio sequencer
   player.update();
+
+  // Setup screen owns the OLED until the PC sends SETUP_DONE
+  if (setupStage != SETUP_DONE) {
+    updateSetupStage();
+    drawSetupScreen();
+    player.update();
+    delay(5);
+    pollSerial();
+    return;
+  }
+
+  // Back to the setup screen if the PC disconnects
+  watchPcLink();
 
   // Update speech scroll (moves text and triggers conversational droid chatter)
   updateSpeechScroll();
@@ -1568,15 +1945,7 @@ void loop() {
   delay(5);
 
   // Serial command listener (via USB)
-  if (Serial.available()) {
-    String serialCmd = Serial.readStringUntil('\n');
-    serialCmd.trim();
-    if (serialCmd.length() > 0) {
-      Serial.print("[Serial] Received: ");
-      Serial.println(serialCmd);
-      parseCommand(serialCmd);
-    }
-  }
+  pollSerial();
 }
 
 // ============================================================
@@ -1631,6 +2000,30 @@ void webSocketEvent(uint8_t client, WStype_t type, uint8_t *payload,
 void parseCommand(String input) {
 
   input.trim();
+
+  // ==========================================================
+  // SETUP SCREEN PROTOCOL
+  // SETUP:<text>  -> PC progress line on the link screen
+  // SETUP_DONE    -> ready animation, then the face wakes up
+  // ==========================================================
+
+  if (input == "SETUP_DONE") {
+    if (setupStage != SETUP_DONE && setupStage != SETUP_READY) {
+      setSetupStage(SETUP_READY);
+    }
+    return;
+  }
+
+  if (input.startsWith("SETUP:")) {
+    setupStatus = input.substring(6);
+    setupStatus.trim();
+    if (setupStage == SETUP_WAIT_PC) setSetupStage(SETUP_LINK);
+    return;
+  }
+
+  if (setupStage != SETUP_DONE && !allowedDuringSetup(input)) {
+    return;  // Face isn't on screen yet
+  }
 
   // ==========================================================
   // EYE LOOK & BLINK COMMANDS
@@ -1763,6 +2156,18 @@ void parseCommand(String input) {
       new_pass.trim();
       applyNewWiFi(new_ssid, new_pass);
     }
+    return;
+  }
+
+  // ==========================================================
+  // NETWORK INFO QUERY (used over USB serial to find the robot)
+  // Format: GET_IP -> "IP:<ip> SSID:<ssid> MODE:<STA|AP>"
+  // ==========================================================
+
+  if (input.equalsIgnoreCase("GET_IP")) {
+    String ip = WiFi.localIP().toString();
+    String ssid = WiFi.SSID();
+    Serial.printf("IP:%s SSID:%s MODE:STA\n", ip.c_str(), ssid.c_str());
     return;
   }
 
@@ -1951,13 +2356,7 @@ void moveForward() {
   }
 
   isMovingForward = true;
-
-  digitalWrite(EN1, HIGH);
-  digitalWrite(C1A, HIGH);
-  digitalWrite(C1B, LOW);
-  digitalWrite(EN2, HIGH);
-  digitalWrite(C2A, HIGH);
-  digitalWrite(C2B, LOW);
+  driveMotors(motorSpeedPct, motorSpeedPct);
 
   Serial.println("Moving Forward");
 }
@@ -1968,13 +2367,7 @@ void moveForward() {
 
 void moveBackward() {
   isMovingForward = false;
-
-  digitalWrite(EN1, HIGH);
-  digitalWrite(C1A, LOW);
-  digitalWrite(C1B, HIGH);
-  digitalWrite(EN2, HIGH);
-  digitalWrite(C2A, LOW);
-  digitalWrite(C2B, HIGH);
+  driveMotors(-motorSpeedPct, -motorSpeedPct);
 
   Serial.println("Moving Backward");
 }
@@ -1985,13 +2378,7 @@ void moveBackward() {
 
 void moveLeft() {
   isMovingForward = false;
-
-  digitalWrite(EN1, HIGH);
-  digitalWrite(C1A, LOW);
-  digitalWrite(C1B, HIGH);
-  digitalWrite(EN2, HIGH);
-  digitalWrite(C2A, HIGH);
-  digitalWrite(C2B, LOW);
+  driveMotors(-motorSpeedPct, motorSpeedPct);
 
   Serial.println("Moving Left");
 }
@@ -2002,13 +2389,7 @@ void moveLeft() {
 
 void moveRight() {
   isMovingForward = false;
-
-  digitalWrite(EN1, HIGH);
-  digitalWrite(C1A, HIGH);
-  digitalWrite(C1B, LOW);
-  digitalWrite(EN2, HIGH);
-  digitalWrite(C2A, LOW);
-  digitalWrite(C2B, HIGH);
+  driveMotors(motorSpeedPct, -motorSpeedPct);
 
   Serial.println("Moving Right");
 }
@@ -2020,12 +2401,41 @@ void moveRight() {
 void stopMotors() {
   isMovingForward = false;
 
-  digitalWrite(EN1, LOW);
-  digitalWrite(EN2, LOW);
-  digitalWrite(C1A, LOW);
-  digitalWrite(C1B, LOW);
-  digitalWrite(C2A, LOW);
-  digitalWrite(C2B, LOW);
+  // Active brake (both inputs HIGH) stops faster than coasting — matters for the obstacle brake
+  ledcWrite(MOTOR_IN1, 255);
+  ledcWrite(MOTOR_IN2, 255);
+  ledcWrite(MOTOR_IN3, 255);
+  ledcWrite(MOTOR_IN4, 255);
 
   Serial.println("Stopped");
+}
+
+// ============================================================
+// DRV8833 HELPERS
+// ============================================================
+
+// pct: -100 (full reverse) .. 100 (full forward)
+void setMotor(uint8_t inA, uint8_t inB, int pct) {
+  pct = constrain(pct, -100, 100);
+  uint32_t duty = map(abs(pct), 0, 100, 0, 255);
+  if (pct > 0)      { ledcWrite(inA, duty); ledcWrite(inB, 0); }
+  else if (pct < 0) { ledcWrite(inA, 0);    ledcWrite(inB, duty); }
+  else              { ledcWrite(inA, 0);    ledcWrite(inB, 0); }
+}
+
+void driveMotors(int leftPct, int rightPct) {
+  setMotor(MOTOR_IN1, MOTOR_IN2, leftPct);
+  setMotor(MOTOR_IN3, MOTOR_IN4, rightPct);
+}
+
+// ULT/nFAULT goes LOW on over-current, over-temperature or VM under-voltage.
+// Reports each new fault once to Serial and to the PC.
+void checkMotorFault() {
+  bool fault = digitalRead(MOTOR_FAULT) == LOW;
+  if (fault && !motorFaultActive) {
+    Serial.println("[MOTOR] DRV8833 fault (over-current / over-heat / low battery)");
+    String alert = "{\"event\":\"motor_fault\"}";
+    webSocket.broadcastTXT(alert);
+  }
+  motorFaultActive = fault;
 }

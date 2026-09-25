@@ -4,6 +4,7 @@ import time
 import threading
 import json
 import random
+import re
 
 # Ensure UTF-8 output on Windows streams so emojis and symbols never crash
 if sys.platform == "win32":
@@ -23,20 +24,47 @@ from ikru.robot import RobotController, IdleManager, ProximityMonitor, Autonomou
 from ikru.vision import VisionReceiver, VLMClient
 from ikru.audio import AudioService
 from ikru.memory import MemoryManager
+from ikru.net import Diagnosis, serial_link
+from ikru.net.bringup import Bringup
+from ikru.net.netinfo import HUB_ROBOT_IP
 
 
 
 # Configuration Defaults (overridden by config.json if present)
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.json")
-config_data = {}
-if os.path.exists(CONFIG_FILE):
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            config_data = json.load(f)
-    except Exception as e:
-        print(f"[Config] Warning loading config.json: {e}")
+# Git-ignored overrides for secrets (Wi-Fi credentials) — merged over config.json
+CONFIG_LOCAL_FILE = os.path.join(os.path.dirname(CONFIG_FILE), "config.local.json")
 
-ROBOT_IP = config_data.get("robot_ip", "ikru-robot.local")
+
+def _load_json(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Config] Warning loading {os.path.basename(path)}: {e}")
+        return {}
+
+
+def _save_config(path=CONFIG_FILE, **updates):
+    """Read-modify-write one config file so local secrets never leak into config.json."""
+    config_data.update(updates)
+    data = _load_json(path)
+    data.update(updates)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"[Config] Warning: could not save {os.path.basename(path)}: {e}")
+        return False
+
+
+config_data = {**_load_json(CONFIG_FILE), **_load_json(CONFIG_LOCAL_FILE)}
+
+ROBOT_IP = config_data.get("robot_ip", HUB_ROBOT_IP)
+ROBOT_LAST_IP = config_data.get("robot_last_ip", "")
 CAM_IP = config_data.get("cam_ip", "192.168.4.1")
 ENABLE_VISION = config_data.get("enable_vision", True)
 ENABLE_MIC = config_data.get("enable_mic", True)
@@ -49,107 +77,151 @@ DEFAULT_VOLUME = config_data.get("volume", 80)
 LLM_MODEL = config_data.get("llm_model", "qwen2.5:3b")
 VLM_MODEL = config_data.get("vlm_model", "qwen3-vl:4b")
 
-VISUAL_KEYWORDS = [
-    "see", "look", "color", "colour", "wear", "wearing",
-    "shirt", "glass", "glasses", "hold", "show", "describe",
-    "notice", "what", "who", "face", "clothes", "outfit",
-    "hand", "background", "room"
+LLM_KEEP_ALIVE = config_data.get("llm_keep_alive", "30m")
+MIC_CONFIG = config_data.get("mic", {})
+
+# Only clearly visual requests trigger the camera VLM (loading it evicts the chat LLM from VRAM)
+VISUAL_PATTERN = re.compile(
+    r"\b(what do you see|can you see|do you see|what you see|look at|looking at|look here|"
+    r"what is this|what's this|what is that|what's that|who am i|"
+    r"what am i (wearing|holding|doing)|how do i look|describe|wearing|holding|"
+    r"colou?rs?|shirt|glasses|outfit|clothes|in front of you|show you|notice|camera)\b",
+    re.IGNORECASE,
+)
+
+EXIT_PHRASES = [
+    "exit", "tata", "good bye", "goodbye", "bye bye", "shut down", "see you", "sleep",
+    "power off", "quit", "later", "catch you later", "turn off", "adios", "cya",
 ]
+
+
+def _is_exit(text):
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in EXIT_PHRASES)
 
 
 import argparse
 import getpass
 
 
-def _prompt_robot_ip(current_ip):
-    """Ask the user for the Robot IP at startup."""
-    print(f"\n  [Robot] Current Robot IP/Hostname: {current_ip}")
-    try:
-        change = input("  Change Robot IP? (y/N): ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print("\n  [Robot] Skipped. Using current IP.")
-        return current_ip
-        
-    if change != "y":
-        return current_ip
-
-    print("\n" + "=" * 50)
-    print("  ROBOT IP CONFIGURATION")
-    print("=" * 50)
-    try:
-        new_ip = input("  Enter Robot IP or Hostname: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print("\n  [Robot] Cancelled. Using current IP.")
-        return current_ip
-
-    if not new_ip:
-        print("  [Robot] No IP entered. Using current IP.")
-        return current_ip
-
-    # Save to config.json for future runs
-    config_data["robot_ip"] = new_ip
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=2)
-        print(f"  [Robot] IP saved to config.json")
-    except Exception as e:
-        print(f"  [Robot] Warning: could not save config: {e}")
-
-    return new_ip
+def _print_diagnosis(diag):
+    print("\n" + "-" * 50)
+    print("  ROBOT NOT REACHABLE")
+    print("-" * 50)
+    print(f"  {diag.message}")
+    for hint in diag.hints:
+        print(f"   -> {hint}")
+    print("-" * 50)
 
 
 def _prompt_wifi_credentials():
-    """Ask the user for home WiFi credentials at startup.
-
-    Credentials are saved to config.json so they only need to be entered once.
-    Returns (ssid, password) tuple.
-    """
+    """Asks for Wi-Fi credentials to provision onto the robot. Saved to config.local.json."""
     saved_ssid = config_data.get("wifi_ssid", "")
-    saved_pass = config_data.get("wifi_pass", "")
-
-    if saved_ssid:
-        print(f"\n  [WiFi] Saved home network: {saved_ssid}")
-        try:
-            change = input("  Change WiFi credentials? (y/N): ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\n  [WiFi] Skipped. Using saved credentials.")
-            return saved_ssid, saved_pass
-        if change != "y":
-            return saved_ssid, saved_pass
-
     print("\n" + "=" * 50)
-    print("  HOME Wi-Fi CONFIGURATION")
-    print("  (Required for audio streaming & internet access)")
+    print("  ROBOT Wi-Fi PROVISIONING")
+    print("  (The robot joins IKRU-CAM first; this network is its fallback)")
     print("=" * 50)
     try:
-        ssid = input("  Enter Wi-Fi SSID: ").strip()
-        password = input("  Enter Wi-Fi Password: ").strip()
+        ssid = input(f"  Wi-Fi SSID [{saved_ssid}]: ").strip() or saved_ssid
+        password = getpass.getpass("  Wi-Fi Password: ").strip()
     except (KeyboardInterrupt, EOFError):
-        print("\n  [WiFi] Cancelled. Using fallback network.")
+        print("\n  [WiFi] Cancelled.")
         return "", ""
-
     if not ssid:
-        print("  [WiFi] No SSID entered. Using fallback network.")
+        print("  [WiFi] No SSID entered.")
+        return "", ""
+    if ":" in ssid:
+        print("  [WiFi] SSIDs containing ':' can't be sent to the robot.")
         return "", ""
 
-    # Save to config.json for future runs
-    config_data["wifi_ssid"] = ssid
-    config_data["wifi_pass"] = password
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=2)
-        print(f"  [WiFi] Credentials saved to config.json")
-    except Exception as e:
-        print(f"  [WiFi] Warning: could not save config: {e}")
-
+    _save_config(CONFIG_LOCAL_FILE, wifi_ssid=ssid, wifi_pass=password)
+    print("  [WiFi] Credentials saved to config.local.json")
     return ssid, password
+
+
+def _usb_serial_menu(robot):
+    """Reads the robot's IP over USB, optionally provisioning Wi-Fi."""
+    if not serial_link.list_ports():
+        print("  [USB] No serial ports found. Plug the robot in with a data USB cable.")
+        return
+    print("  [USB] Asking the robot for its IP over serial...")
+    reply = serial_link.query_ip()
+    if not reply:
+        print("  [USB] No reply. If the board just reset, wait ~10 s for it to boot and try again.")
+    else:
+        port, ip, ssid, mode = reply
+        print(f"  [USB] {port}: robot is at {ip} on '{ssid}' ({mode} mode)")
+        if mode == "STA" and ip != "0.0.0.0":
+            robot.extra_hosts = [ip] + [h for h in robot.extra_hosts if h != ip]
+
+    try:
+        send = input("  Send Wi-Fi credentials to the robot over USB? (y/N): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return
+    if send == "y":
+        ssid, password = _prompt_wifi_credentials()
+        if ssid:
+            port = serial_link.send_wifi(ssid, password)
+            print(f"  [USB] Sent to {port}. The robot is switching networks..." if port
+                  else "  [USB] Could not open a serial port.")
+
+
+def _connection_wizard(robot, interactive):
+    """Explains why the robot isn't reachable and offers ways to fix it."""
+    while not robot.connected:
+        if isinstance(robot.last_result, Diagnosis):
+            _print_diagnosis(robot.last_result)
+        if not interactive:
+            print("[Robot] Continuing offline. Reconnecting in the background.")
+            return
+        try:
+            choice = input("  [r]etry  [m]anual IP  [u]sb serial  [c]ontinue offline: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            choice = "c"
+
+        if choice == "m":
+            try:
+                new_ip = input("  Robot IP or hostname: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                continue
+            if new_ip:
+                robot.ip = new_ip
+                _save_config(robot_ip=new_ip)
+                print(f"  [Robot] Saved robot_ip={new_ip} to config.json")
+        elif choice == "u":
+            _usb_serial_menu(robot)
+        elif choice != "r":
+            print("[Robot] Continuing offline. IKRU will connect automatically when the robot appears.")
+            return
+        robot.connect()
+
+
+def _provision_wifi_over_ws(robot):
+    """Pushes Wi-Fi credentials to a connected robot, then reconnects."""
+    ssid, password = _prompt_wifi_credentials()
+    if not ssid:
+        return
+    print(f"\n[WiFi] Sending Wi-Fi credentials to robot: {ssid}")
+    robot.send(f"SET_WIFI:{ssid}:{password}")
+    robot._handle_disconnect()
+    print("[WiFi] Robot is switching networks... waiting 15 seconds...")
+    time.sleep(15)
+    if robot.connect():
+        print("[WiFi] Reconnected to robot.")
+    else:
+        print("[WiFi] Could not reconnect yet. The robot may be on a network this PC can't reach.")
+
+
+def _remember_robot_ip(ip):
+    if ip != config_data.get("robot_last_ip"):
+        _save_config(robot_last_ip=ip)
 
 
 def main():
     parser = argparse.ArgumentParser(description="PROJECT IKRU — Robotic Assistant")
     parser.add_argument("--ip", default=ROBOT_IP, help=f"ESP32 Robot Body IP or Hostname (default: {ROBOT_IP})")
     parser.add_argument("--cam-ip", default=CAM_IP, help=f"ESP32-CAM IP address (default: {CAM_IP})")
-    parser.add_argument("--volume", type=int, default=DEFAULT_VOLUME, help=f"Speaker volume 0-100% (default: {DEFAULT_VOLUME}%)")
+    parser.add_argument("--volume", type=int, default=DEFAULT_VOLUME, help=f"Speaker volume 0-100%% (default: {DEFAULT_VOLUME}%%)")
     parser.add_argument("--pc-audio", action="store_true", default=PLAY_PC_AUDIO, help="Also play audio through PC speakers")
     parser.add_argument("--voice-mode", choices=["r2d2", "tts"], default="r2d2", help="Voice output mode: 'r2d2' (instant droid glissando chirps via SmartElex speaker, default) or 'tts' (neural speech streaming)")
     parser.add_argument("--tts-engine", choices=["chatterbox", "chatterbox_mtl", "edge"], default=TTS_ENGINE, help=f"TTS synthesis engine (default: {TTS_ENGINE})")
@@ -158,30 +230,20 @@ def main():
     parser.add_argument("--lang", default=None, help="Language code for Chatterbox Multilingual TTS (e.g. 'fr', 'zh', 'es')")
     parser.add_argument("--no-mic", action="store_true", help="Disable microphone and use text typing")
     parser.add_argument("--no-vision", action="store_true", help="Disable UDP vision camera feed")
-    parser.add_argument("--no-wifi-setup", action="store_true", help="Skip WiFi credential prompt")
+    parser.add_argument("--no-wizard", "--no-wifi-setup", dest="no_wizard", action="store_true", help="Skip the interactive connection menu if the robot isn't found")
+    parser.add_argument("--provision-wifi", action="store_true", help="Send new Wi-Fi credentials to the robot after connecting")
     args = parser.parse_args()
 
-    target_robot_ip = args.ip
     target_cam_ip = args.cam_ip
     play_pc = args.pc_audio
     enable_vision = ENABLE_VISION and not args.no_vision
     enable_mic = ENABLE_MIC and not args.no_mic
 
-    # ============================================================
-    # STEP 1: Ask for Robot IP and home WiFi credentials
-    # ============================================================
-    wifi_ssid, wifi_pass = "", ""
-    if not args.no_wifi_setup:
-        target_robot_ip = _prompt_robot_ip(target_robot_ip)
-        wifi_ssid, wifi_pass = _prompt_wifi_credentials()
-
     print("\n" + "=" * 50)
     print("  PROJECT IKRU — Robotic Assistant")
-    print(f"  Target Robot IP: {target_robot_ip}")
+    print(f"  Robot: {args.ip}  |  Camera: {target_cam_ip}")
     print(f"  Voice Mode: {args.voice_mode.upper()} {'(Instant Glissando Droid Speaker)' if args.voice_mode == 'r2d2' else f'({args.tts_engine.upper()})'}")
     print(f"  Speaker Volume: {args.volume}%")
-    if wifi_ssid:
-        print(f"  Home WiFi: {wifi_ssid}")
     if args.voice_prompt:
         print(f"  Voice Prompt: {args.voice_prompt}")
     if args.lang:
@@ -190,33 +252,46 @@ def main():
     print("=" * 50)
 
     # ============================================================
-    # STEP 2: Connect to ESP32 (on whatever network it's on)
+    # STEP 1: Structured bring-up
+    #   PC network -> IKRU power-on -> PC joins IKRU-CAM -> body link
     # ============================================================
-    robot = RobotController(ip=target_robot_ip)
+    bringup = Bringup(
+        config_data,
+        save_local=lambda **kw: _save_config(CONFIG_LOCAL_FILE, **kw),
+        interactive=not args.no_wizard,
+    )
+    bringup.run_network()
+
+    app_ready = threading.Event()
+
+    def _on_robot_connect(ip):
+        _remember_robot_ip(ip)
+        if app_ready.is_set():
+            # Robot rebooted mid-session: skip its setup screen straight to the face
+            robot.setup_done()
+
+    robot = RobotController(
+        ip=args.ip,
+        extra_hosts=[ROBOT_LAST_IP] if ROBOT_LAST_IP else [],
+        on_connect=_on_robot_connect,
+        connect_now=False,
+    )
+    bringup.link_body(robot)
 
     # ============================================================
-    # STEP 3: If home WiFi credentials provided, tell ESP32 to
-    #         switch to home WiFi, then reconnect
+    # STEP 2: Not found -> explain why and offer fixes
     # ============================================================
-    if wifi_ssid and robot.connected:
-        print(f"\n[WiFi] Sending home WiFi credentials to ESP32: {wifi_ssid}")
-        try:
-            robot.send(f"SET_WIFI:{wifi_ssid}:{wifi_pass}")
-            print("[WiFi] ESP32 is switching networks... waiting 15 seconds...")
-            robot.close()
-            time.sleep(15)  # Give ESP32 time to reconnect to home WiFi
+    if not robot.connected:
+        _connection_wizard(robot, interactive=not args.no_wizard)
 
-            # Reconnect — the ESP32 should now be on the home WiFi
-            print("[WiFi] Reconnecting to ESP32 on home network...")
-            robot = RobotController(ip=target_robot_ip)
-            if robot.connected:
-                print("[WiFi] Successfully reconnected to ESP32 on home WiFi!")
-            else:
-                print("[WiFi] Warning: Could not reconnect. ESP32 may still be switching.")
-        except Exception as e:
-            print(f"[WiFi] Error during network switch: {e}")
-            print("[WiFi] Continuing on current network...")
-            robot = RobotController(ip=target_robot_ip)
+    # ============================================================
+    # STEP 3: Optional Wi-Fi provisioning (only when asked for)
+    # ============================================================
+    if args.provision_wifi:
+        if robot.connected:
+            _provision_wifi_over_ws(robot)
+        else:
+            print("[WiFi] --provision-wifi needs a connected robot. Use [u]sb serial in the menu instead.")
 
     # ============================================================
     # STEP 4: Initialize remaining subsystems
@@ -226,6 +301,7 @@ def main():
     memory_enabled = memory_cfg.get("enabled", True)
     memory = None
     if memory_enabled:
+        robot.setup_status("Loading memory")
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         db_path = os.path.join(project_root, memory_cfg.get("sqlite_path", "data/memory/ikru_history.db"))
         qdrant_path = os.path.join(project_root, memory_cfg.get("qdrant_path", "data/memory/qdrant"))
@@ -237,16 +313,20 @@ def main():
             print(f"[Memory] Warning: Memory init failed ({e}), running without memory.")
             memory = None
 
-    chat = ChatEngine(model=LLM_MODEL, memory=memory)
+    robot.setup_status("Waking brain")
+    chat = ChatEngine(model=LLM_MODEL, memory=memory, keep_alive=LLM_KEEP_ALIVE)
+    # Load the LLM into VRAM while the rest of the system starts up
+    threading.Thread(target=chat.warm_up, daemon=True).start()
     
     voice_mode = args.voice_mode.lower()
     audio_service = None
     if voice_mode == "tts" and ENABLE_AUDIO:
+        robot.setup_status("Warming voice")
         # Create permanent cache directory for audio files
         audio_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", "cache")
         os.makedirs(audio_cache_dir, exist_ok=True)
         audio_service = AudioService(
-            robot_ip=target_robot_ip,
+            robot_ip=robot.ip,
             play_pc=play_pc,
             engine=args.tts_engine,
             voice=args.voice,
@@ -281,9 +361,10 @@ def main():
     use_mic = enable_mic
     mic_controller = None
     if use_mic:
+        robot.setup_status("Opening ears")
         try:
             from ikru.mic import MicController
-            mic_controller = MicController()
+            mic_controller = MicController(**MIC_CONFIG)
         except Exception as e:
             print(f"[Audio] Error initializing microphone: {e}")
             use_mic = False  # Fallback to text input
@@ -294,6 +375,7 @@ def main():
     if enable_vision and target_cam_ip:
         try:
             print("[Vision] Initializing UDP Vision Receiver...")
+            robot.setup_status("Opening eyes")
             vision = VisionReceiver(cam_ip=target_cam_ip, show_window=True)
             vision.start()
             vlm = VLMClient(model=VLM_MODEL)
@@ -311,6 +393,7 @@ def main():
         proximity_monitor=proximity_monitor,
         audio_service=audio_service,
         model=LLM_MODEL,
+        keep_alive=LLM_KEEP_ALIVE,
     )
     autonomous_brain.start()
 
@@ -318,23 +401,37 @@ def main():
     mic_queue = queue.Queue()
     interrupt_event = threading.Event()
     stop_listening = None
+    # While IKRU is thinking/speaking/moving (plus a short echo guard after), speech is
+    # ignored unless it's an exit command — replaces the old sleep-then-flush approach.
+    busy = threading.Event()
+    busy_until = [0.0]
 
     if use_mic and mic_controller:
-        def mic_callback(recognizer, audio):
-            try:
-                text = recognizer.recognize_google(audio)
-                if text:
-                    # Add to queue to process on the next turn
-                    mic_queue.put(text)
-                    
-                    # Only hard-interrupt the current speech if it's an exit command
-                    exit_phrases = ["exit", "tata", "good bye", "goodbye", "bye bye", "shut down", "see you", "sleep", "power off", "quit", "later", "catch you later", "turn off", "adios", "cya"]
-                    if any(phrase in text.lower() for phrase in exit_phrases):
-                        interrupt_event.set()
-            except Exception:
-                pass
-        stop_listening = mic_controller.start_background_listening(mic_callback)
+        def on_text(text, t_end):
+            if _is_exit(text):
+                # Hard-interrupt the current speech and queue the exit
+                interrupt_event.set()
+                mic_queue.put((text, t_end))
+                return
+            if busy.is_set() or t_end < busy_until[0]:
+                print(f"  [Mic] Ignored while busy: {text}")
+                return
+            mic_queue.put((text, t_end))
+
+        def on_speech_start():
+            if not busy.is_set():
+                idle_manager.notify_activity()
+
+        stop_listening = mic_controller.start_background_listening(on_text, on_speech_start)
         print("[Mic] Background listener started. (Say 'exit' to quit)")
+
+    # --------------------------------------------------------
+    # SETUP COMPLETE: robot plays its ready animation, face wakes up
+    # --------------------------------------------------------
+    bringup.finish()
+    app_ready.set()
+    robot.setup_done()
+    time.sleep(2.5)  # let the ready animation finish before the first expression
 
     # --------------------------------------------------------
     # GREETING ON WAKE
@@ -350,17 +447,21 @@ def main():
         
         greeting_text = f"Hi {user_name}! I am online and ready." if user_name else "Hello! I am online and ready."
         print(f"\nAssistant [HAPPY]: {greeting_text}")
+        busy.set()
         robot.speak_segments([("HAPPY", greeting_text)], audio_service=audio_service)
+        busy_until[0] = time.time() + 0.3
+        busy.clear()
 
     def chat_loop():
         nonlocal use_mic
         while True:
             user_input = ""
+            t_heard = None
             interrupt_event.clear()
 
             if use_mic and mic_controller:
                 try:
-                    user_input = mic_queue.get()
+                    user_input, t_heard = mic_queue.get()
                     print(f"\nYou (Voice): {user_input}")
                 except Exception as e:
                     print(f"  [Mic Error: {e}]")
@@ -375,6 +476,8 @@ def main():
             if not user_input:
                 continue
 
+            busy.set()
+            t_turn = time.time()
             # Notify IdleManager of activity (pauses idle animations)
             idle_manager.notify_activity()
             # Pause background systems while IKRU is thinking / speaking / moving
@@ -382,8 +485,7 @@ def main():
             autonomous_brain.pause()
 
             # Check for any exit phrases
-            exit_phrases = ["exit", "tata", "good bye", "goodbye", "bye bye", "shut down", "see you", "sleep", "power off", "quit", "later", "catch you later", "turn off", "adios", "cya"]
-            if any(phrase in user_input.lower().strip() for phrase in exit_phrases):
+            if _is_exit(user_input):
                 # Sleepy Exit Routine (just animation and sound)
                 print("\n[IKRU] Going to sleep...")
                 robot.sleepy()
@@ -419,7 +521,7 @@ def main():
 
             # Optional visual reasoning
             visual_context = None
-            if vision and vlm and any(kw in user_input.lower() for kw in VISUAL_KEYWORDS):
+            if vision and vlm and VISUAL_PATTERN.search(user_input):
                 jpeg_bytes = vision.buffer.get_jpeg_bytes()
                 if jpeg_bytes:
                     print("[Vision] Querying VLM for visual observation...")
@@ -433,12 +535,18 @@ def main():
                 print(f"[Proximity] Context: {prox_context}")
 
             # Query Chat LLM
+            t_llm = time.time()
             tools, response_text, segments = chat.ask(
                 user_input,
                 visual_context=visual_context,
                 sensor_context=prox_context,
             )
-            
+            t_done = time.time()
+            timing = f"prep {int((t_llm - t_turn) * 1000)}ms | LLM {int((t_done - t_llm) * 1000)}ms"
+            if t_heard:
+                timing += f" | end-of-speech → reply {t_done - t_heard:.1f}s"
+            print(f"  [Timing] {timing}")
+
             # Stop the filler timer in case we finished before 10s
             thinking_event.set()
 
@@ -454,7 +562,8 @@ def main():
                 idle_manager.notify_speech_done()
                 proximity_monitor.resume()
                 autonomous_brain.resume()
-                # Skip executing tools if we were interrupted by an exit command
+                busy.clear()
+                # Skip executing tools; the queued exit command is handled next turn
                 continue
 
             # Execute movement actions & sequences
@@ -477,7 +586,6 @@ def main():
                         method()
 
             full_text = " ".join(txt for _, txt in segments).strip()
-            import re
             display_text = re.sub(r'\[[^\]]*\]', '', full_text)
             display_text = re.sub(r'\s+([.,!?;:])', r'\1', display_text)
             display_text = re.sub(r'\s+', ' ', display_text).strip()
@@ -485,17 +593,9 @@ def main():
             emotions_str = f" [{ ' / '.join(dict.fromkeys(emotions_list)) }]" if emotions_list else ""
             print(f"\nAssistant{emotions_str}: {display_text}")
 
-            # Brief pause to let robot audio finish so mic doesn't re-trigger
-            time.sleep(0.6)
-            
-            # Flush the mic queue of anything captured while IKRU was speaking or executing
-            if use_mic and mic_controller:
-                import queue
-                while not mic_queue.empty():
-                    try:
-                        mic_queue.get_nowait()
-                    except queue.Empty:
-                        break
+            # Short echo guard: speech that ended within 0.3 s of IKRU finishing is ignored
+            busy_until[0] = time.time() + 0.3
+            busy.clear()
 
             # Resume idle, proximity reflexes, and autonomous thoughts now that all activity is done
             idle_manager.notify_speech_done()
