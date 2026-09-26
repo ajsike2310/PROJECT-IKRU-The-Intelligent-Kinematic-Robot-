@@ -2334,6 +2334,10 @@ void parseCommand(String input) {
     moveRight();
   } else if (input == "STOP") {
     stopMotors();
+  } else if (input.startsWith("SPEED:")) {
+    // Drive speed for subsequent moves; slower roaming keeps IKRU on the table
+    motorSpeedPct = constrain(input.substring(6).toInt(), 30, 100);
+    Serial.printf("Motor speed set to %d%%\n", motorSpeedPct);
   } else {
     Serial.print("Unknown Command: ");
     Serial.println(input);

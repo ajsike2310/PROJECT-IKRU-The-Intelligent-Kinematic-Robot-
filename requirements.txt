@@ -49,6 +49,7 @@ jaconv
 Jinja2
 joblib
 kokoro-onnx
+laya
 lazy-loader
 librosa
 llvmlite

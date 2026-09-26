@@ -237,6 +237,9 @@ class RobotController:
                     if "distance" in reply:
                         import json
                         data = json.loads(reply)
+                        # Skip obstacle_alert/obstacle_blocked broadcasts ("distance_cm")
+                        if data.get("type") != "distance":
+                            continue
                         return float(data.get("cm", -1.0))
         except Exception:
             pass
@@ -247,6 +250,10 @@ class RobotController:
             except Exception:
                 pass
         return -1.0
+
+    def set_speed(self, pct: int):
+        """Sets drive speed for all subsequent moves (30-100%). Older firmware ignores it."""
+        self.send(f"SPEED:{max(30, min(100, int(pct)))}")
 
     def set_obstacle_threshold(self, cm: float):
         """Sets the safety emergency brake threshold distance in centimeters."""

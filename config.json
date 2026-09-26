@@ -25,5 +25,25 @@
     "qdrant_path": "data/memory/qdrant",
     "recall_top_k": 3,
     "recall_threshold": 0.55
+  },
+  "autonomous": {
+    "enabled": true,
+    "roam_enabled": true,
+    "roam_speed_pct": 55,
+    "forward_cm_per_s": 25.0,
+    "turn_deg_per_s": 180.0,
+    "leash_cm": 35.0,
+    "roam_stop_cm": 25.0,
+    "idle_before_roam_s": 30,
+    "search_timeout_s": 180,
+    "search_min_confidence": 0.6
+  },
+  "tool_router": {
+    "engine": "laya",
+    "mode": "parallel",
+    "laya_model": "convaiinnovations/laya",
+    "device": "cpu",
+    "min_confidence": 0.8,
+    "veto": false
   }
 }

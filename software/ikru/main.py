@@ -20,7 +20,9 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from ikru.chat import ChatEngine
-from ikru.robot import RobotController, IdleManager, ProximityMonitor, AutonomousBrain
+from ikru.chat.tool_router import LayaToolRouter, merge_tool_calls
+from ikru.robot import RobotController, IdleManager, ProximityMonitor
+from ikru.autonomy import AutonomousBrain
 from ikru.vision import VisionReceiver, VLMClient
 from ikru.audio import AudioService
 from ikru.memory import MemoryManager
@@ -79,6 +81,8 @@ VLM_MODEL = config_data.get("vlm_model", "qwen3-vl:4b")
 
 LLM_KEEP_ALIVE = config_data.get("llm_keep_alive", "30m")
 MIC_CONFIG = config_data.get("mic", {})
+AUTONOMOUS_CONFIG = config_data.get("autonomous", {})
+TOOL_ROUTER_CONFIG = config_data.get("tool_router", {})
 
 # Only clearly visual requests trigger the camera VLM (loading it evicts the chat LLM from VRAM)
 VISUAL_PATTERN = re.compile(
@@ -317,6 +321,22 @@ def main():
     chat = ChatEngine(model=LLM_MODEL, memory=memory, keep_alive=LLM_KEEP_ALIVE)
     # Load the LLM into VRAM while the rest of the system starts up
     threading.Thread(target=chat.warm_up, daemon=True).start()
+
+    # Tool calling: "laya" = Laya decision model picks actions (LLM fallback), "llm" = LLM JSON tools only
+    tool_router = None
+    if TOOL_ROUTER_CONFIG.get("engine", "llm").lower() == "laya":
+        tool_router = LayaToolRouter(
+            model_id=TOOL_ROUTER_CONFIG.get("laya_model", "convaiinnovations/laya"),
+            device=TOOL_ROUTER_CONFIG.get("device", "cpu"),
+            min_confidence=TOOL_ROUTER_CONFIG.get("min_confidence", 0.8),
+            veto=TOOL_ROUTER_CONFIG.get("veto", False),
+        )
+        threading.Thread(target=tool_router.warm_up, daemon=True).start()
+    # "parallel": Laya runs alongside the LLM (no added delay; urgent actions fire the moment
+    # Laya answers). "sequential": Laya first, and the LLM is told which action was chosen.
+    router_mode = TOOL_ROUTER_CONFIG.get("mode", "parallel").lower()
+    from concurrent.futures import ThreadPoolExecutor
+    laya_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="laya") if tool_router else None
     
     voice_mode = args.voice_mode.lower()
     audio_service = None
@@ -383,7 +403,8 @@ def main():
         except Exception as e:
             print(f"[Vision] Could not start vision receiver: {e}")
 
-    # Autonomous Brain — spontaneous LLM-driven thoughts, movement, and commentary
+    # Autonomous Brain — roams the desk, spontaneous LLM-driven thoughts, questions, world model
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     autonomous_brain = AutonomousBrain(
         robot=robot,
         memory=memory,
@@ -394,7 +415,11 @@ def main():
         audio_service=audio_service,
         model=LLM_MODEL,
         keep_alive=LLM_KEEP_ALIVE,
+        chat_engine=chat,
+        config=AUTONOMOUS_CONFIG,
+        world_model_path=os.path.join(project_root, "data", "memory", "world_model.json"),
     )
+    # Always started: autonomous.enabled only controls idle behaviours; object search always works
     autonomous_brain.start()
 
     import queue
@@ -421,6 +446,9 @@ def main():
         def on_speech_start():
             if not busy.is_set():
                 idle_manager.notify_activity()
+                # Someone's talking: stop roaming and listen (ignore IKRU's own chirps)
+                if not autonomous_brain.is_vocalizing():
+                    autonomous_brain.attention()
 
         stop_listening = mic_controller.start_background_listening(on_text, on_speech_start)
         print("[Mic] Background listener started. (Say 'exit' to quit)")
@@ -499,6 +527,35 @@ def main():
                 robot.thinking()
             print("  [Thinking...]")
 
+            # Laya decides the physical action; urgent ones (stop / cancel search) run the
+            # moment it answers — typically long before the LLM has finished its reply.
+            executed_now = set()
+
+            def run_immediate(decision):
+                if not (decision and decision.immediate):
+                    return
+                for t in decision.tools:
+                    action = t.get("action")
+                    if action == "stop":
+                        robot.stop()
+                        autonomous_brain.cancel_search()
+                    elif action == "cancel_search":
+                        autonomous_brain.cancel_search()
+                    executed_now.add(action)
+
+            def laya_decide():
+                d = tool_router.decide(user_input)
+                if d:
+                    print(f"[Laya] {d}")
+                run_immediate(d)
+                return d
+
+            decision, laya_future = None, None
+            if tool_router and tool_router.available:
+                laya_future = laya_pool.submit(laya_decide)
+                if router_mode == "sequential":
+                    decision, laya_future = laya_future.result(), None
+
             thinking_event = threading.Event()
 
             def play_filler():
@@ -540,8 +597,15 @@ def main():
                 user_input,
                 visual_context=visual_context,
                 sensor_context=prox_context,
+                action_context=decision.context_line() if decision else None,
             )
             t_done = time.time()
+            if laya_future is not None:
+                try:
+                    decision = laya_future.result(timeout=5.0)
+                except Exception as e:
+                    print(f"[Laya] No decision ({e}) - using LLM tool calls.")
+            tools = merge_tool_calls(decision, tools, skip_actions=executed_now)
             timing = f"prep {int((t_llm - t_turn) * 1000)}ms | LLM {int((t_done - t_llm) * 1000)}ms"
             if t_heard:
                 timing += f" | end-of-speech → reply {t_done - t_heard:.1f}s"
@@ -577,11 +641,27 @@ def main():
                     robot.play_sequence(seq_name)
                     continue
 
+                # Object search runs on the autonomy thread once this turn finishes
+                if action in ["search_object", "find_object", "search"]:
+                    target = t.get("target", t.get("object", t.get("name", "")))
+                    if not autonomous_brain.start_search(target):
+                        robot.speak_segments(
+                            [("sad", "I need my camera working to search for things [sigh].")],
+                            audio_service=audio_service,
+                        )
+                    continue
+                if action == "cancel_search" or (action == "stop" and autonomous_brain.is_searching()):
+                    autonomous_brain.cancel_search()
+                    if action == "cancel_search":
+                        continue
+
                 method = getattr(robot, action, None)
                 if method and callable(method):
                     print(f"Executing: {action} ({duration}s)")
                     if action in ["forward", "backward", "left", "right", "stop"]:
                         method(duration)
+                        # Keep the world model's idea of IKRU's position in sync
+                        autonomous_brain.note_external_motion(action, duration)
                     else:
                         method()
 

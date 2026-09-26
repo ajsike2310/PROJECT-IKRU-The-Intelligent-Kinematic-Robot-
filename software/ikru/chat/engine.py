@@ -1,4 +1,5 @@
 import json
+import threading
 import ollama
 from .prompts import SYSTEM_PROMPT
 from .parser import parse_segments, parse_llm_json
@@ -14,6 +15,8 @@ class ChatEngine:
         self.model = model
         self.memory = memory
         self.keep_alive = keep_alive
+        # Guards self.messages — the autonomous brain appends from its own thread
+        self._messages_lock = threading.Lock()
         self.messages = [
             {
                 "role": "system",
@@ -31,14 +34,28 @@ class ChatEngine:
 
     def clear_history(self):
         """Resets conversational memory back to initial system prompt."""
-        self.messages = [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            }
-        ]
+        with self._messages_lock:
+            self.messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                }
+            ]
 
-    def ask(self, user_input, visual_context=None, sensor_context=None):
+    def note_autonomous_utterance(self, response_text, tools=None):
+        """
+        Adds something Ikru said on its own (autonomous thought / question) to the
+        conversation window, so a user replying to it gets a reply in context.
+        """
+        with self._messages_lock:
+            if len(self.messages) > 11:
+                self.messages = [self.messages[0]] + self.messages[-10:]
+            self.messages.append({
+                "role": "assistant",
+                "content": json.dumps({"tools": tools or [], "response": response_text}),
+            })
+
+    def ask(self, user_input, visual_context=None, sensor_context=None, action_context=None):
         """
         Sends a user message to Ollama with optional injected visual context,
         sensor context (e.g. proximity), and recalled long-term memory.
@@ -48,8 +65,9 @@ class ChatEngine:
             segments (list): list of (emotion, text) tuples
         """
         # Maintain a sliding window: preserve system prompt + up to 10 latest messages
-        if len(self.messages) > 11:
-            self.messages = [self.messages[0]] + self.messages[-10:]
+        with self._messages_lock:
+            if len(self.messages) > 11:
+                self.messages = [self.messages[0]] + self.messages[-10:]
 
         # Build augmented input with memory context and visual observations
         augmented_parts = []
@@ -71,7 +89,11 @@ class ChatEngine:
         if sensor_context:
             augmented_parts.append(sensor_context.strip())
 
-        # 4. Append the actual user message
+        # 4. Inject the action the tool router already decided on (so words match the body)
+        if action_context:
+            augmented_parts.append(action_context.strip())
+
+        # 5. Append the actual user message
         augmented_parts.append(f"User: {user_input}" if augmented_parts else user_input)
 
         augmented_input = "\n".join(augmented_parts)
@@ -83,16 +105,18 @@ class ChatEngine:
             except Exception as e:
                 print(f"[ChatEngine] Memory record warning: {e}")
 
-        self.messages.append({
-            "role": "user",
-            "content": augmented_input
-        })
+        with self._messages_lock:
+            self.messages.append({
+                "role": "user",
+                "content": augmented_input
+            })
+            history = list(self.messages)
 
         try:
             # Query local Ollama LLM
             response = ollama.chat(
                 model=self.model,
-                messages=self.messages,
+                messages=history,
                 format="json",
                 keep_alive=self.keep_alive,
             )
@@ -103,7 +127,7 @@ class ChatEngine:
             try:
                 fallback_res = ollama.chat(
                     model=self.model,
-                    messages=self.messages,
+                    messages=history,
                     keep_alive=self.keep_alive,
                 )
                 assistant_raw = fallback_res["message"]["content"].strip()
@@ -117,13 +141,14 @@ class ChatEngine:
             segments = [("normal", response_text)]
 
         # Append assistant response to sliding window history
-        self.messages.append({
-            "role": "assistant",
-            "content": json.dumps({
-                "tools": tools,
-                "response": response_text
+        with self._messages_lock:
+            self.messages.append({
+                "role": "assistant",
+                "content": json.dumps({
+                    "tools": tools,
+                    "response": response_text
+                })
             })
-        })
 
         # Record assistant response to persistent memory (non-blocking)
         if self.memory:
