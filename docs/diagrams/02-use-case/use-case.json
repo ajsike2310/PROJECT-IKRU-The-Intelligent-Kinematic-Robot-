@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "IKRU Use Case Diagram",
+    "output": "use-case.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 530],
+    "legend": {
+      "entries": {
+        "external": { "label": "Actor" },
+        "frontend": { "label": "User use case" },
+        "backend": { "label": "Developer use case" }
+      }
+    },
+    "views": [
+      { "id": "user-goals", "label": "Desk user", "focus": ["user", "uc_chat", "uc_move", "uc_see", "uc_find", "uc_teach", "uc_exit"], "note": "Everything the person at the desk can ask IKRU to do by voice or keyboard." },
+      { "id": "developer-goals", "label": "Developer", "focus": ["developer", "uc_flash", "uc_connect", "uc_diag"], "note": "Setup and maintenance tasks: firmware, networking, and hardware diagnostics." }
+    ]
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "Desk User", "sublabel": "primary actor", "tag": "voice / keyboard", "pos": [40, 40], "size": [150, 412] },
+    { "id": "uc_chat", "type": "frontend", "label": "Chat with IKRU", "sublabel": "questions, jokes, moods", "pos": [330, 40], "size": [210, 52] },
+    { "id": "uc_move", "type": "frontend", "label": "Command movement", "sublabel": "drive, turn, stop, perform", "pos": [330, 112], "size": [210, 52] },
+    { "id": "uc_see", "type": "frontend", "label": "Ask what it sees", "sublabel": "camera + VLM answer", "pos": [330, 184], "size": [210, 52] },
+    { "id": "uc_find", "type": "frontend", "label": "Find an object", "sublabel": "roam + classify obstacles", "pos": [330, 256], "size": [210, 52] },
+    { "id": "uc_teach", "type": "frontend", "label": "Teach personal facts", "sublabel": "name, likes, remember that", "pos": [330, 328], "size": [210, 52] },
+    { "id": "uc_exit", "type": "frontend", "label": "End session", "sublabel": "say an exit phrase", "pos": [330, 400], "size": [210, 52] },
+    { "id": "uc_flash", "type": "backend", "label": "Flash firmware", "sublabel": "head + body sketches", "pos": [620, 112], "size": [210, 52] },
+    { "id": "uc_connect", "type": "backend", "label": "Connect + provision", "sublabel": "bring-up, Wi-Fi, USB", "pos": [620, 220], "size": [210, 52] },
+    { "id": "uc_diag", "type": "backend", "label": "Run diagnostics", "sublabel": "motors, sonar, calibration", "pos": [620, 328], "size": [210, 52] },
+    { "id": "developer", "type": "external", "label": "Developer", "sublabel": "secondary actor", "tag": "Arduino IDE + Python", "pos": [930, 40], "size": [130, 412] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "IKRU system boundary", "wraps": ["uc_chat", "uc_move", "uc_see", "uc_find", "uc_teach", "uc_exit", "uc_flash", "uc_connect", "uc_diag"] }
+  ],
+  "connections": [
+    { "id": "u-chat", "from": "user", "to": "uc_chat" },
+    { "id": "u-move", "from": "user", "to": "uc_move" },
+    { "id": "u-see", "from": "user", "to": "uc_see" },
+    { "id": "u-find", "from": "user", "to": "uc_find" },
+    { "id": "u-teach", "from": "user", "to": "uc_teach" },
+    { "id": "u-exit", "from": "user", "to": "uc_exit" },
+    { "id": "d-flash", "from": "developer", "to": "uc_flash" },
+    { "id": "d-connect", "from": "developer", "to": "uc_connect" },
+    { "id": "d-diag", "from": "developer", "to": "uc_diag" }
+  ]
+}

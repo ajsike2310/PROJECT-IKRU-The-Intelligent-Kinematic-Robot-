@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "IKRU Data Flow Diagram: Level 3 (2.4 Query LLM)",
+    "output": "dfd-level-3.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      440
+    ],
+    "legend": {
+      "entries": {
+        "database": {
+          "label": "Data store"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "prompt-build",
+        "label": "Prompt build",
+        "focus": [
+          "in",
+          "p241",
+          "qdrant",
+          "sqlite",
+          "p242"
+        ],
+        "note": "Qdrant recalls and SQLite facts wrap the user's words and context tags into one prompt."
+      },
+      {
+        "id": "persistence",
+        "label": "Persistence",
+        "focus": [
+          "p242",
+          "p244",
+          "sqlite",
+          "qdrant"
+        ],
+        "note": "Every message is saved to SQLite; embedding and fact extraction run on background threads."
+      },
+      {
+        "id": "llm-call",
+        "label": "LLM call",
+        "focus": [
+          "p242",
+          "window",
+          "p243",
+          "ollama",
+          "out"
+        ],
+        "note": "The sliding window (system + last 10) goes to Ollama in JSON mode; raw JSON moves on to parsing."
+      }
+    ]
+  },
+  "stages": [
+    {
+      "label": "Input + vectors"
+    },
+    {
+      "label": "Recall"
+    },
+    {
+      "label": "Assemble + record"
+    },
+    {
+      "label": "Query"
+    },
+    {
+      "label": "Model + output"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "in",
+      "type": "external",
+      "label": "2.3 Gather context",
+      "sublabel": "from Level 2",
+      "stage": 0,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "qdrant",
+      "type": "database",
+      "label": "D1b Qdrant",
+      "sublabel": "384-dim vectors",
+      "stage": 0,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "p241",
+      "type": "backend",
+      "label": "2.4.1 Build memory",
+      "sublabel": "build_memory_context",
+      "stage": 1,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "D1a SQLite",
+      "sublabel": "messages, user_facts",
+      "stage": 1,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "p242",
+      "type": "backend",
+      "label": "2.4.2 Assemble",
+      "sublabel": "augmented input",
+      "stage": 2,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p244",
+      "type": "backend",
+      "label": "2.4.4 Record",
+      "sublabel": "record_user_message",
+      "stage": 2,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "p243",
+      "type": "backend",
+      "label": "2.4.3 Query",
+      "sublabel": "JSON, then plain retry",
+      "stage": 3,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "window",
+      "type": "database",
+      "label": "D3 Window",
+      "sublabel": "system + last 10",
+      "stage": 3,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "out",
+      "type": "external",
+      "label": "2.5 Parse reply",
+      "sublabel": "to Level 2",
+      "stage": 4,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama",
+      "sublabel": "ollama.chat()",
+      "stage": 4,
+      "row": 1,
+      "width": 130
+    }
+  ],
+  "flows": [
+    {
+      "from": "in",
+      "to": "p241",
+      "label": "text + tags",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "qdrant",
+      "to": "p241",
+      "label": "top-3 recalls"
+    },
+    {
+      "from": "sqlite",
+      "to": "p241",
+      "label": "user facts"
+    },
+    {
+      "from": "p241",
+      "to": "p242",
+      "label": "memory block",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "p242",
+      "to": "p244",
+      "label": "user text",
+      "labelAt": [
+        530,
+        212
+      ]
+    },
+    {
+      "from": "p244",
+      "to": "sqlite",
+      "label": "message row",
+      "route": "straight"
+    },
+    {
+      "from": "p244",
+      "to": "qdrant",
+      "label": "embedding (bg)",
+      "variant": "dashed",
+      "route": "bottom-channel"
+    },
+    {
+      "from": "p242",
+      "to": "window",
+      "label": "user turn"
+    },
+    {
+      "from": "window",
+      "to": "p243",
+      "label": "history"
+    },
+    {
+      "from": "p243",
+      "to": "ollama",
+      "label": "chat request",
+      "variant": "emphasis"
+    },
+    {
+      "from": "ollama",
+      "to": "out",
+      "label": "raw JSON",
+      "variant": "emphasis"
+    }
+  ]
+}

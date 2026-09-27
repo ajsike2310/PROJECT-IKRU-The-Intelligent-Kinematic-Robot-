@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "IKRU Runtime Architecture",
+    "output": "system-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1140,
+      570
+    ],
+    "repository": {
+      "url": "https://github.com/ajsike2310/PROJECT-IKRU-The-Intelligent-Kinematic-Robot-",
+      "provider": "github",
+      "link_mode": "local-only",
+      "revision": "ab938e0215acef310997bd8f544abcccd68344f5"
+    },
+    "views": [
+      {
+        "id": "command-path",
+        "label": "Voice to motion",
+        "focus": [
+          "user",
+          "mic",
+          "chatloop",
+          "robotctl",
+          "body"
+        ],
+        "note": "A spoken command becomes text, a reply plus tools, then WebSocket commands to the body."
+      },
+      {
+        "id": "thinking",
+        "label": "Thinking",
+        "focus": [
+          "chatloop",
+          "chat",
+          "ollama",
+          "memory",
+          "laya"
+        ],
+        "note": "ChatEngine adds memory context and asks Ollama for JSON; Laya picks urgent actions in parallel."
+      },
+      {
+        "id": "senses",
+        "label": "Vision and autonomy",
+        "focus": [
+          "head",
+          "vision",
+          "chatloop",
+          "brain",
+          "robotctl"
+        ],
+        "note": "Camera frames feed visual answers; the autonomous brain roams and searches when nobody talks."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "voice or keyboard",
+      "pos": [
+        40,
+        190
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "mic",
+      "type": "frontend",
+      "label": "MicController",
+      "sublabel": "Silero VAD + Google STT",
+      "pos": [
+        270,
+        190
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/mic/controller.py",
+          "line": 11
+        }
+      ]
+    },
+    {
+      "id": "chatloop",
+      "type": "backend",
+      "label": "chat_loop",
+      "sublabel": "main.py orchestrator",
+      "tag": "turn owner",
+      "pos": [
+        500,
+        190
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/main.py",
+          "line": 483
+        }
+      ]
+    },
+    {
+      "id": "robotctl",
+      "type": "backend",
+      "label": "RobotController",
+      "sublabel": "WebSocket client",
+      "pos": [
+        730,
+        190
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/robot/controller.py",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "id": "body",
+      "type": "external",
+      "label": "ESP32 Body",
+      "sublabel": "motors, OLED, sonar",
+      "tag": "192.168.4.200",
+      "pos": [
+        960,
+        190
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "firmware/controller/controller.ino",
+          "line": 2000
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "type": "database",
+      "label": "Memory",
+      "sublabel": "SQLite + Qdrant",
+      "pos": [
+        270,
+        50
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/memory/manager.py"
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "type": "backend",
+      "label": "ChatEngine",
+      "sublabel": "prompt + JSON parse",
+      "pos": [
+        500,
+        50
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/chat/engine.py",
+          "line": 61
+        }
+      ]
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama",
+      "sublabel": "qwen2.5 · qwen3-vl",
+      "tag": ":11434",
+      "pos": [
+        730,
+        50
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "laya",
+      "type": "backend",
+      "label": "Laya router",
+      "sublabel": "fast intent pick",
+      "pos": [
+        270,
+        330
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/chat/tool_router.py"
+        }
+      ]
+    },
+    {
+      "id": "vision",
+      "type": "backend",
+      "label": "VisionReceiver",
+      "sublabel": "frames + VLMClient",
+      "pos": [
+        500,
+        330
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/vision/receiver.py"
+        }
+      ]
+    },
+    {
+      "id": "brain",
+      "type": "backend",
+      "label": "AutonomousBrain",
+      "sublabel": "roam, think, search",
+      "pos": [
+        730,
+        330
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "software/ikru/autonomy/brain.py"
+        }
+      ]
+    },
+    {
+      "id": "head",
+      "type": "external",
+      "label": "ESP32-CAM Head",
+      "sublabel": "IKRU-CAM access point",
+      "tag": "192.168.4.1",
+      "pos": [
+        500,
+        470
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "firmware/head/head.ino"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Windows PC · Python (software/ikru)",
+      "wraps": [
+        "mic",
+        "chatloop",
+        "robotctl",
+        "memory",
+        "chat",
+        "ollama",
+        "laya",
+        "vision",
+        "brain"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "speech",
+      "from": "user",
+      "to": "mic",
+      "label": "speech",
+      "variant": "emphasis"
+    },
+    {
+      "id": "text",
+      "from": "mic",
+      "to": "chatloop",
+      "label": "text",
+      "variant": "emphasis"
+    },
+    {
+      "id": "commands",
+      "from": "chatloop",
+      "to": "robotctl",
+      "label": "reply + tools",
+      "variant": "emphasis"
+    },
+    {
+      "id": "websocket",
+      "from": "robotctl",
+      "to": "body",
+      "label": "WS :81",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ask",
+      "from": "chatloop",
+      "to": "chat",
+      "label": "ask()"
+    },
+    {
+      "id": "llm",
+      "from": "chat",
+      "to": "ollama",
+      "label": "JSON chat"
+    },
+    {
+      "id": "recall",
+      "from": "chat",
+      "to": "memory",
+      "label": "recall"
+    },
+    {
+      "id": "intent",
+      "from": "laya",
+      "to": "chatloop",
+      "label": "intent",
+      "variant": "dashed"
+    },
+    {
+      "id": "visual",
+      "from": "vision",
+      "to": "chatloop",
+      "label": "scene"
+    },
+    {
+      "id": "video",
+      "from": "head",
+      "to": "vision",
+      "label": "UDP JPEG",
+      "variant": "dashed"
+    },
+    {
+      "id": "autonomy",
+      "from": "brain",
+      "to": "robotctl",
+      "label": "roam"
+    }
+  ]
+}

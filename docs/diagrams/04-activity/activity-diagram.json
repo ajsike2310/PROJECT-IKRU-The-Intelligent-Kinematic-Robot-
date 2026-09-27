@@ -1,0 +1,271 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "IKRU Activity Diagram: One Conversation Turn",
+    "output": "activity-diagram.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "happy-turn",
+        "label": "Normal turn",
+        "focus": [
+          "hear",
+          "gate",
+          "pause",
+          "context",
+          "ask",
+          "merge",
+          "speak",
+          "act",
+          "resume"
+        ],
+        "note": "Hear, pause background systems, think, speak, move, then resume."
+      },
+      {
+        "id": "fast-intent",
+        "label": "Parallel intent",
+        "focus": [
+          "pause",
+          "laya",
+          "merge"
+        ],
+        "note": "Laya decides the physical action while the LLM writes the reply; stop fires immediately."
+      },
+      {
+        "id": "exit-path",
+        "label": "Exit",
+        "focus": [
+          "gate",
+          "shutdown"
+        ],
+        "note": "An exit phrase plays the sleepy animation and ends the program."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "loop",
+      "label": "chat_loop (main.py)"
+    },
+    {
+      "id": "reason",
+      "label": "Reasoning"
+    },
+    {
+      "id": "body",
+      "label": "Robot body"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p-hear",
+      "label": "Hear",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "p-think",
+      "label": "Think",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p-respond",
+      "label": "Respond",
+      "fromCol": 4,
+      "toCol": 5
+    }
+  ],
+  "mainPath": [
+    "hear",
+    "gate",
+    "pause",
+    "context",
+    "ask",
+    "merge",
+    "speak",
+    "act",
+    "resume"
+  ],
+  "nodes": [
+    {
+      "id": "hear",
+      "lane": "loop",
+      "col": 0,
+      "type": "frontend",
+      "label": "Hear utterance",
+      "sublabel": "VAD + Google STT",
+      "width": 140
+    },
+    {
+      "id": "gate",
+      "lane": "loop",
+      "col": 1,
+      "type": "security",
+      "label": "Exit phrase?",
+      "sublabel": "decision",
+      "width": 140
+    },
+    {
+      "id": "pause",
+      "lane": "loop",
+      "col": 2,
+      "type": "backend",
+      "label": "Pause background",
+      "sublabel": "idle, sonar, brain",
+      "width": 140
+    },
+    {
+      "id": "merge",
+      "lane": "loop",
+      "col": 4,
+      "type": "backend",
+      "label": "Merge tool calls",
+      "sublabel": "Laya first, LLM fills",
+      "width": 140
+    },
+    {
+      "id": "resume",
+      "lane": "loop",
+      "col": 5,
+      "type": "backend",
+      "label": "Resume background",
+      "sublabel": "0.3 s echo guard",
+      "width": 140
+    },
+    {
+      "id": "speak",
+      "lane": "body",
+      "col": 4,
+      "type": "external",
+      "label": "Speak segments",
+      "sublabel": "face + OLED scroll",
+      "width": 140
+    },
+    {
+      "id": "act",
+      "lane": "body",
+      "col": 5,
+      "type": "external",
+      "label": "Execute tools",
+      "sublabel": "move, sequence, search",
+      "width": 140
+    },
+    {
+      "id": "laya",
+      "lane": "loop",
+      "col": 3,
+      "type": "backend",
+      "label": "Laya intent",
+      "sublabel": "stop fires at once",
+      "width": 140
+    },
+    {
+      "id": "context",
+      "lane": "reason",
+      "col": 2,
+      "type": "backend",
+      "label": "Gather context",
+      "sublabel": "camera if visual, sonar",
+      "width": 140
+    },
+    {
+      "id": "ask",
+      "lane": "reason",
+      "col": 3,
+      "type": "backend",
+      "label": "ChatEngine.ask",
+      "sublabel": "memory + Ollama JSON",
+      "width": 140
+    },
+    {
+      "id": "shutdown",
+      "lane": "body",
+      "col": 1,
+      "type": "security",
+      "label": "Sleep + shut down",
+      "sublabel": "sleepy face, sigh",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-hear",
+      "from": "hear",
+      "to": "gate",
+      "label": "text"
+    },
+    {
+      "id": "e-no",
+      "from": "gate",
+      "to": "pause",
+      "label": "no"
+    },
+    {
+      "id": "e-yes",
+      "from": "gate",
+      "to": "shutdown",
+      "label": "yes",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "id": "e-laya",
+      "from": "pause",
+      "to": "laya",
+      "label": "parallel",
+      "role": "async",
+      "variant": "dashed"
+    },
+    {
+      "id": "e-context",
+      "from": "pause",
+      "to": "context"
+    },
+    {
+      "id": "e-ask",
+      "from": "context",
+      "to": "ask"
+    },
+    {
+      "id": "e-reply",
+      "from": "ask",
+      "to": "merge",
+      "label": "reply + tools"
+    },
+    {
+      "id": "e-intent",
+      "from": "laya",
+      "to": "merge",
+      "label": "intent",
+      "variant": "dashed"
+    },
+    {
+      "id": "e-speak",
+      "from": "merge",
+      "to": "speak"
+    },
+    {
+      "id": "e-act",
+      "from": "speak",
+      "to": "act",
+      "label": "then move"
+    },
+    {
+      "id": "e-resume",
+      "from": "act",
+      "to": "resume"
+    },
+    {
+      "id": "e-next",
+      "from": "resume",
+      "to": "hear",
+      "label": "next turn",
+      "role": "return",
+      "fromSide": "top",
+      "toSide": "top"
+    }
+  ]
+}
