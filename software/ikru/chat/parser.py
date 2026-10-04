@@ -118,3 +118,46 @@ def parse_llm_json(raw_text):
 
     except json.JSONDecodeError:
         return [], raw_text
+
+
+class StreamSentenceParser:
+    """
+    Incremental stream token parser.
+    Buffers incoming LLM streaming tokens and yields completed sentences
+    for immediate low-latency TTS dispatch.
+    """
+
+    def __init__(self, delimiters=None):
+        self.delimiters = delimiters or {".", "!", "?", ";", "\n"}
+        self.buffer = ""
+        self.in_bracket = False
+
+    def feed(self, token: str) -> list[str]:
+        """
+        Feeds a text token into the buffer and returns any completed sentences.
+        """
+        sentences = []
+        for char in token:
+            self.buffer += char
+            if char == "[":
+                self.in_bracket = True
+            elif char == "]":
+                self.in_bracket = False
+
+            # If end of sentence delimiter reached outside of bracketed tag
+            if not self.in_bracket and char in self.delimiters:
+                candidate = self.buffer.strip()
+                if candidate and len(candidate) > 2:
+                    sentences.append(candidate)
+                    self.buffer = ""
+
+        return sentences
+
+    def flush(self) -> list[str]:
+        """Flushes remaining text buffer as final sentence."""
+        remaining = self.buffer.strip()
+        self.buffer = ""
+        if remaining:
+            return [remaining]
+        return []
+

@@ -556,26 +556,24 @@ class AudioService:
                 if self.volume != 1.0:
                     stereo_data = np.clip(stereo_data * self.volume, -1.0, 1.0)
 
-                # Calculate duration in seconds
-                self.last_duration = float(len(stereo_data) / target_rate)
+                # Write unique 16-bit Stereo PCM WAV for streaming chunk
+                chunk_name = f"ikru_chunk_{int(time.time() * 1000)}.wav"
+                chunk_path = os.path.join(self.cache_dir, chunk_name)
+                sf.write(chunk_path, stereo_data, target_rate, subtype="PCM_16")
 
-                # Write 16-bit Stereo PCM WAV
-                sf.write(self.wav_path, stereo_data, target_rate, subtype="PCM_16")
+                # Also write to static server audio directory if it exists
+                static_audio_dir = Path(__file__).resolve().parents[1] / "ui" / "static" / "audio"
+                static_audio_dir.mkdir(parents=True, exist_ok=True)
+                sf.write(static_audio_dir / chunk_name, stereo_data, target_rate, subtype="PCM_16")
 
                 # Optional local PC speaker playback (winsound)
                 if should_play_pc and HAS_WINSOUND and os.name == "nt":
                     try:
-                        winsound.PlaySound(self.wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                        winsound.PlaySound(chunk_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
                     except Exception as e:
                         print(f"[AudioService] PC Playback error: {e}")
-                elif not should_play_pc and HAS_WINSOUND and os.name == "nt":
-                    try:
-                        winsound.PlaySound(None, winsound.SND_PURGE)
-                    except Exception:
-                        pass
 
-                # Return fresh HTTP streaming URL (simple path for ESP32 HTTPClient)
-                return f"http://{self.host_ip}:{self.port}/{self.wav_filename}"
+                return f"/audio/{chunk_name}"
 
             except Exception as e:
                 print(f"[AudioService] Synthesis error: {e}")
@@ -615,6 +613,11 @@ class AudioService:
         if getattr(self, 'filler_urls', None):
             return random.choice(self.filler_urls)
         return None, None
+
+    def speak_to_file(self, text: str) -> tuple[Optional[str], float]:
+        """Synthesizes speech and returns (audio_url, duration_in_seconds)."""
+        url = self.synthesize(text)
+        return url, getattr(self, "last_duration", 0.0)
 
     def stop(self):
         """Stops the audio HTTP server."""

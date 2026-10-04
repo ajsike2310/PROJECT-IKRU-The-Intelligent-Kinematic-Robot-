@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "IKRU Runtime Architecture",
+    "output": "ikru-runtime-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "primary-path", "label": "Primary command path", "focus": ["user", "chat-engine", "ollama", "robot-ctrl", "esp32-body", "motors"], "note": "Follow a natural language command from user input to motor action." },
+      { "id": "sensory-path", "label": "Sensory path", "focus": ["esp32-cam", "vision-receiver", "vlm-client", "chat-engine"], "note": "See the camera-to-LLM visual reasoning loop." },
+      { "id": "audio-path", "label": "Audio path", "focus": ["audio-svc", "esp32-body"], "note": "Trace TTS synthesis and I2S streaming to the robot speaker." }
+    ]
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "Terminal / Mic", "pos": [30, 280], "size": [120, 60] },
+    { "id": "chat-engine", "type": "backend", "label": "ChatEngine", "sublabel": "Ollama qwen2.5:3b", "pos": [220, 180], "size": [130, 64], "tag": "AI" },
+    { "id": "ollama", "type": "external", "label": "Ollama LLM", "sublabel": "qwen2.5:3b local", "pos": [220, 400], "size": [130, 60] },
+    { "id": "robot-ctrl", "type": "backend", "label": "RobotController", "sublabel": "WebSocket client", "pos": [440, 60], "size": [130, 64], "tag": "Bridge" },
+    { "id": "esp32-body", "type": "cloud", "label": "ESP32 Body", "sublabel": "ws://:81", "pos": [660, 50], "size": [130, 64], "tag": "MCU" },
+    { "id": "motors", "type": "external", "label": "DRV8833 + Motors", "sublabel": "M1 / M2", "pos": [880, 50], "size": [130, 60] },
+    { "id": "audio-svc", "type": "backend", "label": "AudioService", "sublabel": "TTS :8000", "pos": [440, 280], "size": [130, 60], "tag": "Voice" },
+    { "id": "oled", "type": "external", "label": "OLED + Speaker", "sublabel": "SSD1306 / MAX98357A", "pos": [880, 280], "size": [130, 60] },
+    { "id": "vision-receiver", "type": "backend", "label": "Vision Receiver", "sublabel": "UDP :2222", "pos": [440, 470], "size": [130, 60], "tag": "Camera" },
+    { "id": "esp32-cam", "type": "cloud", "label": "ESP32-CAM", "sublabel": "AP :2222 UDP", "pos": [660, 440], "size": [130, 60], "tag": "Vision" },
+    { "id": "vlm-client", "type": "backend", "label": "VLM Client", "sublabel": "qwen3-vl:4b", "pos": [440, 600], "size": [130, 60], "tag": "Vision" },
+    { "id": "conn-mgr", "type": "backend", "label": "ConnectionMgr", "sublabel": "state machine", "pos": [660, 600], "size": [130, 60], "tag": "Health" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Local Computer", "wraps": ["user", "chat-engine", "ollama", "robot-ctrl", "audio-svc", "vision-receiver", "vlm-client", "conn-mgr"], "pad": 14 },
+    { "kind": "security-group", "label": "Wi-Fi LAN", "wraps": ["esp32-body", "esp32-cam"], "pad": 14 }
+  ],
+  "connections": [
+    { "from": "user", "to": "chat-engine", "label": "voice / text", "variant": "emphasis" },
+    { "from": "chat-engine", "to": "ollama", "label": "prompt + context", "variant": "emphasis" },
+    { "from": "ollama", "to": "chat-engine", "label": "JSON tools", "variant": "emphasis" },
+    { "from": "chat-engine", "to": "robot-ctrl", "label": "action commands", "variant": "emphasis" },
+    { "from": "robot-ctrl", "to": "esp32-body", "label": "WebSocket :81", "variant": "emphasis" },
+    { "from": "esp32-body", "to": "motors", "label": "DRV8833 GPIO", "variant": "emphasis" },
+    { "from": "esp32-body", "to": "oled", "label": "I2C / I2S", "variant": "dashed" },
+    { "from": "esp32-cam", "to": "vision-receiver", "label": "UDP MJPEG :2222", "variant": "emphasis" },
+    { "from": "vision-receiver", "to": "vlm-client", "label": "frame" },
+    { "from": "vlm-client", "to": "chat-engine", "label": "visual context", "variant": "dashed" },
+    { "from": "chat-engine", "to": "audio-svc", "label": "segment TTS", "variant": "dashed" },
+    { "from": "audio-svc", "to": "esp32-body", "label": "I2S stream", "variant": "dashed" },
+    { "from": "conn-mgr", "to": "robot-ctrl", "label": "health probe", "variant": "dashed" },
+    { "from": "conn-mgr", "to": "esp32-cam", "label": "reachability", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Primary Path", "items": ["User speaks or types → ChatEngine queries Ollama", "LLM returns tool calls + emotion tags → RobotController sends WebSocket commands", "ESP32 drives DRV8833 motors and animates OLED"] },
+    { "dot": "emerald", "title": "Sensory Loop", "items": ["ESP32-CAM streams UDP video to VisionReceiver", "VLM (qwen3-vl:4b) analyzes frames on visual keyword triggers", "Scene description injected back into ChatEngine context"] },
+    { "dot": "rose", "title": "Trust Boundaries", "items": ["Local computer holds all AI inference — no cloud calls", "Wi-Fi LAN separates host from ESP32 devices", "ESP32 firmware is trust boundary: commands validated on-device"] },
+    { "dot": "amber", "title": "External Dependencies", "items": ["Ollama must run locally with qwen2.5:3b and qwen3-vl:4b models", "ESP32-WROOM-32 and ESP32-CAM on same Wi-Fi subnet", "AudioService streams I2S to ESP32 MAX98357A speaker"] }
+  ]
+}

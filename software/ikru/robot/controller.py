@@ -1,6 +1,7 @@
 import time
 import threading
 import websocket
+from ikru import config
 from .protocol import calculate_speech_scroll_time, BOX_ANIM_DURATION_S
 from ..net import Diagnosis, find_robot
 from ..net.netinfo import HUB_ROBOT_IP
@@ -16,7 +17,7 @@ class RobotController:
 
     def __init__(
         self,
-        ip=HUB_ROBOT_IP,
+        ip=None,
         port=81,
         auto_reconnect=True,
         ping_interval=5,
@@ -27,11 +28,11 @@ class RobotController:
         connect_now=True,
         **kwargs
     ):
-        self.ip = ip
-        self.port = port
+        self.ip = ip or getattr(config, 'DEFAULT_ROBOT_IP', HUB_ROBOT_IP)
+        self.port = port or getattr(config, 'ROBOT_WS_PORT', 81)
         self.auto_reconnect = auto_reconnect
-        self.ping_interval = ping_interval
-        self.ping_timeout = ping_timeout
+        self.ping_interval = ping_interval or getattr(config, 'PING_INTERVAL_S', 5)
+        self.ping_timeout = ping_timeout or getattr(config, 'PING_TIMEOUT_S', 3)
         self.extra_hosts = list(extra_hosts or [])
         self.on_connect = on_connect
         self.discovery_timeout = discovery_timeout

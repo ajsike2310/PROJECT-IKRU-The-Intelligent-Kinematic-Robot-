@@ -1,58 +1,97 @@
 {
   "project_name": "PROJECT IKRU",
-  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements and eye/face animations on an ESP32 via WebSockets, with dedicated AP-mode UDP camera streaming from an ESP32-CAM.",
+  "description": "An offline AI-powered desk companion robot unit that translates natural language commands using a local LLM into motor movements, facial eye expressions, and interactive OLED scene animations (such as dancing stickmen or walking off screen) on an ESP32 via WebSockets, with dedicated AP-mode UDP camera streaming from an ESP32-CAM.",
   "structure": {
     "software": {
       "path": "software/ikru/",
       "packages": {
+        "config.py": "Centralized system configuration defining network defaults, hardware IPs, Ollama LLM parameters, audio settings, and streaming latency targets.",
+        "connection.py": "ConnectionManager class implementing a deterministic connection state machine (DISCONNECTED -> CONFIG_LOADING -> HARDWARE_PROBING -> CONNECTING -> VERIFYING -> READY -> DEGRADED), non-blocking TCP probing, Wi-Fi interface discovery, and fault isolation across Robot Body (port 81), ESP32-CAM (ports 2222/2223), and Ollama LLM (port 11434).",
         "audio": {
           "__init__.py": "Exposes AudioService.",
-          "service.py": "AudioService class managing lazy-loaded Chatterbox TTS (Resemble AI) with exact vocabulary paralinguistic token mapping ([clear_throat], [laughter], [giggle], [sigh], [gasp], [cry], [groan], [whisper], [sniff], [cough], [sneeze]), strict whitelist filtering stripping all non-vocal bracketed tags and OLED eye emotions so they are never read aloud, vision prompt leak purging, token isolation spacing, zero-shot voice cloning with custom reference audio prompts, master volume control (set_volume) with software amplitude scaling (-1.0 to 1.0 clipping) on 16-bit PCM WAV output, multilingual synthesis via ChatterboxMultilingualTTS (t3_model='v3'), and ultra-fast default fallback to Edge-TTS (~0.3s). Features dual output (direct browser HTML5 audio playback and local HTTP port 8000 streaming), 44.1kHz 16-bit Stereo PCM WAV resampling (scipy.signal.resample_poly) for ESP32 MAX98357A I2S streaming, phonetic normalization ('Ikru'), runtime engine switching (set_engine), runtime voice switching (set_voice), and clean stream URLs without query strings.",
+          "service.py": "AudioService class managing Chatterbox TTS and Edge-TTS fallback, unique timestamped WAV chunk generation, dual output (/audio/ relative HTTP static route and local PC winsound), and 44.1kHz 16-bit Stereo PCM WAV resampling.",
           "voices": "Directory storing zero-shot custom cloned voice prompt audio files (24kHz mono 16-bit PCM WAV) for Chatterbox TTS."
         },
         "chat": {
-          "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying with sliding-window history pruning (preserving system prompt and last 10 messages) to prevent context bloat and latency buildup, Ollama plain-text JSON fallback, and clear_history reset method.",
-          "prompts.py": "System prompt, robot identity with strict 'Ikru' name capitalization rule, mandatory pairing of emotional shifts with vocal paralinguistic sound tags ([sigh] for tiredness/relief/huh, [giggle]/[laughter] for joy/amusement, [gasp] for surprise/shock, [clear_throat] for thinking/focus, [cry] for sorrow, [groan] for grumpiness, [whisper] for secrets) to audibly convey emotions via Chatterbox TTS, mandatory leading OLED emotion tags, strict prohibition against echoing vision tags or writing bracketed stage directions, OLED emotion rules, and movement tool instructions.",
-          "parser.py": "Extracts OLED facial expression [emotion] tags while preserving Chatterbox paralinguistic sound tags inside spoken text chunks, automatically infers OLED facial emotions from vocal sounds ([laugh]->glee, [clear_throat]->focused, [cry]->sad) or conversational sentiment when explicit tags are absent, recovers top-level JSON emotion fields, and parses tool calls from LLM JSON responses."
+          "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying with qwen2.5:1.5b (414ms first token latency), sliding-window history pruning, JSON fallback, and ask_stream streaming generator for sub-second response latency.",
+          "prompts.py": "System prompt, robot identity with strict 'Ikru' name capitalization rule, mandatory pairing of emotional shifts with vocal paralinguistic sound tags, mandatory leading OLED emotion tags, OLED emotion rules, and movement tool instructions.",
+          "parser.py": "Extracts OLED facial expression [emotion] tags, recovers top-level JSON emotion fields, parses tool calls from LLM JSON responses, and exposes StreamSentenceParser for incremental sentence boundary parsing."
         },
         "vision": {
           "receiver.py": "VisionReceiver class handling AP discovery handshake (port 2223) and reassembling 22-byte header UDP packets into frames (port 2222).",
           "frame_buffer.py": "Thread-safe latest-frame buffer with zero queue buildup.",
           "vlm.py": "VLMClient for on-demand visual reasoning with Qwen3-VL/LLaVA."
         },
+        "autonomy": {
+          "brain.py": "AutonomousBrain class managing background curiosity, random exploration, vision object identification, self-directed questioning, and idle state transitions.",
+          "locomotion.py": "Autonomous locomotion controller for obstacle avoidance, wandering, and target tracking.",
+          "world_model.py": "Maintains spatial representation of surrounding objects and obstacles."
+        },
+        "memory": {
+          "database.py": "SQLite database storage for short-term facts, conversation logs, and interaction history.",
+          "vector_store.py": "Qdrant vector store integration for semantic long-term memory retrieval.",
+          "manager.py": "MemoryManager coordinating SQLite fact extraction and Qdrant semantic search context injection."
+        },
+        "net": {
+          "discovery.py": "UDP/TCP network discovery and automatic ESP32 body & camera IP detection.",
+          "bringup.py": "Automated network bring-up, Wi-Fi provisioning, and hardware reachability verification.",
+          "netinfo.py": "Active network configuration and IP route resolution utilities."
+        },
         "mic": {
           "__init__.py": "Exposes MicController.",
-          "controller.py": "MicController class handling PyAudio/SpeechRecognition initialization, ambient noise calibration, safe ASCII prompt rendering (preventing Windows charmap crashes), and Google Speech-to-Text."
+          "controller.py": "MicController class handling PyAudio/SpeechRecognition initialization, ambient noise calibration, safe ASCII prompt rendering, and Google Speech-to-Text.",
+          "vad.py": "Voice Activity Detection (VAD) segmenter for stream audio gating."
+        },
+        "chat": {
+          "engine.py": "ChatEngine class managing Ollama LLM conversation history and querying with qwen2.5:3b/1.5b, sliding-window history pruning, JSON fallback, persistent MemoryManager context injection, and ask_stream streaming generator for sub-second response latency.",
+          "prompts.py": "System prompt, robot identity with strict 'Ikru' name capitalization rule, mandatory pairing of emotional shifts with vocal paralinguistic sound tags, mandatory leading OLED emotion tags, OLED emotion rules, and movement tool instructions.",
+          "parser.py": "Extracts OLED facial expression [emotion] tags, recovers top-level JSON emotion fields, parses tool calls from LLM JSON responses, and exposes StreamSentenceParser for incremental sentence boundary parsing.",
+          "tool_router.py": "Natural language action intent router mapping user prompts to robot movement, emotion sequences, or VLM vision queries."
         },
         "robot": {
-          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 (default active IP: 192.168.1.42) with keep-alive pings, candidate failover, background auto-reconnect, motor movements, full-screen OLED animated eye expressions (with speech text box removed), real-time emotion logging to console, buffered playback duration timing to prevent premature resets to NORMAL, and I2S audio playback (SPEAK_URL / STOP_AUDIO) synchronized with emotion duration and customizable play_pc / stream_robot routing.",
-          "protocol.py": "Command strings, constants, and scroll timing calculations."
+          "controller.py": "RobotController WebSocket client managing connection to ws://{ip}:81 with keep-alive pings, candidate failover, background auto-reconnect, motor movements, ultrasonic distance queries, emergency obstacle brake, R2-D2 sound sweeps, full-screen OLED animated eye expressions, and I2S audio playback synchronization.",
+          "protocol.py": "Command strings, constants, and scroll timing calculations.",
+          "idle.py": "Idle state behavior generator (yawning, looking around, blinking).",
+          "proximity.py": "Ultrasonic proximity alert monitor and reactive behavior handler.",
+          "sequences.py": "SequenceRunner for playing multi-modal recorded emotion sequences (e.g. celebrate)."
         },
         "ui": {
           "path": "software/ikru/ui/",
-          "server.py": "Lightweight HTTP server serving the IKRU professional UI, REST API (/api/status, /api/scan, /api/robot/command, /api/audio/test, /api/audio/volume, /api/camera/stream, /api/camera/frame, /api/camera/status, /api/vision/observe, /api/chat, /api/chat/clear, /api/assistant/status, /api/assistant/logs, /api/wifi/scan, /api/wifi/configure, /api/voice/upload, /api/voice/list, /api/voice/select), integrating ChatEngine with on-demand VLM scene observations, synchronous speech synthesis delivering accurate audio_url and duration before client resolution, runtime TTS engine selection ('edge' fast mode vs 'chatterbox' neural), protected socket I/O preventing WinError 10053 traces, dynamic Wi-Fi credential provisioning via WebSocket or USB Serial fallback (COM7), master speaker volume scaling, live ESP32-CAM UDP proxy, zero-shot voice cloning studio, and bridging WebSocket connection to the robot body (192.168.1.42:81).",
+          "server.py": "Lightweight HTTP server serving the IKRU professional UI, REST API (/api/status, /api/scan, /api/network/info, /api/chat/stream, /api/robot/command, /api/audio/test, /api/audio/volume, /api/camera/stream, /api/camera/frame, /api/camera/status, /api/vision/observe, /api/wifi/scan, /api/wifi/configure, /api/voice/upload), integrating ChatEngine with SSE streaming, refined visual intent keywords, connection state machine health checks, master volume scaling, multi-stage audio decoder (soundfile, librosa, scipy, torchaudio, pydub), and live ESP32-CAM UDP proxy.",
           "static": {
-            "index.html": "Professional minimal HTML5 layout featuring the ~1.5s geometric IKRU logo boot experience, header volume slider pill with mute toggle, Wi-Fi Provisioning card with SSID datalist & transport selector, Zero-Shot Voice Cloning Studio card with upload/live mic record & profile management, live onboard camera viewport with /api/camera/stream MJPEG feed, telemetry badge, on-demand [OBSERVE SCENE] Qwen-VL trigger button, live OLED eye emulator, Talk to Ikru conversational dialogue panel with TTS engine selector (Fast Edge-TTS vs Expressive Chatterbox), default enabled PC/Browser speaker playback, reset memory button, microphone dictation and quick prompts, kinematics dpad, and neural vocal expression console.",
-            "style.css": "Apple-grade off-white (#F8F9FA) CSS design system, hairline blueprint construction lines, Space Grotesk & JetBrains Mono typography, conversational chat bubble styling, TTS engine selector pills, mic pulse animation, volume slider styling, Wi-Fi network pills, voice studio waveform preview, camera viewport reticle & telemetry overlay, and CSS keyframe assembly animations.",
-            "app.js": "Vanilla JS controller managing boot sequence state transitions, real-time WebSocket telemetry polling, camera telemetry monitoring (/api/camera/status), on-demand VLM scene observation trigger (triggerSceneObservation), automated visual observation updates during chat, master volume adjustments, dynamic Wi-Fi network scanning & credential dispatch, voice sample recording via MediaRecorder and file uploading, conversational chat messaging with fast/neural engine dispatch and direct HTML5 audio playback (sendChatMessage), conversation reset (clearChatHistory), Web Speech API voice input (toggleVoiceInput), motor actuation, simulated OLED eye synchronization, and speech synthesis."
+            "index.html": "Professional minimal HTML5 layout featuring the ~1.5s geometric IKRU logo boot experience, header volume slider pill with mute toggle, Wi-Fi Provisioning card, live onboard camera viewport, live OLED eye emulator, Talk to Ikru conversational dialogue panel with sub-second voice streaming, reset memory button, microphone dictation, zero-shot voice cloning studio, and kinematics dpad.",
+            "style.css": "Apple-grade off-white (#F8F9FA) CSS design system, hairline blueprint construction lines, Space Grotesk & JetBrains Mono typography, conversational chat bubble styling, and CSS keyframe animations.",
+            "app.js": "Vanilla JS controller managing boot sequence state transitions, real-time WebSocket telemetry polling, EventSource SSE chat streaming (sendChatMessage), master volume adjustments, dynamic Wi-Fi network scanning, browser WebAudio AudioBuffer to 24kHz 16-bit PCM WAV conversion for zero-shot voice cloning, and speech synthesis."
           }
         }
       },
-      "main.py": "Main CLI terminal loop integrating ChatEngine, RobotController (default 192.168.1.42), VisionReceiver, MicController, and AudioService with UTF-8 stream reconfiguration, active emotion tags prominently displayed in assistant console output (Assistant [EMOTION]: ...), and CLI arguments (--ip, --cam-ip, --pc-audio, --tts-engine, --voice, --voice-prompt, --lang, --no-mic, --no-vision) for standalone terminal companion interaction with expressive Chatterbox neural voice synthesis.",
+      "main.py": "Main CLI terminal loop integrating ChatEngine, RobotController, VisionReceiver, MicController, and AudioService.",
       "run_dashboard.py": "Convenience launcher script for the IKRU professional companion web dashboard on port 5000."
     },
-    "dump": {
-        "path": "dump/",
-        "purpose": "Archived IKRU Companion Studio web dashboard assets and server launcher moved out of the active software tree.",
-        "contents": {
-          "run_ui.py": "Launcher script for Companion Studio (port 5000).",
-          "ui": "Backend HTTP server (server.py) and frontend glassmorphism dashboard (static/)."
-        }
-      },
       "active_network": {
-        "esp32_body_ip": "192.168.1.42",
-        "ws_port": 81,
-        "mode": "Station (STA) connected to local WiFi"
+        "server_ip": "192.168.1.34",
+        "wifi_ssid": "GNXS-2.4G-C457E1",
+        "esp32_cam": {
+          "serial_port": "COM8",
+          "ap_ssid": "IKRU-CAM",
+          "ap_ip": "192.168.4.1",
+          "pc_interface": "192.168.4.2",
+          "status": "ONLINE"
+        },
+        "esp32_body": {
+          "configured_ip": "192.168.1.42",
+          "ws_port": 81,
+          "serial_port": "COM7",
+          "status": "OFFLINE"
+        },
+        "connection_sequence": [
+          "1. Power on ESP32 Body & ESP32-CAM",
+          "2. Confirm PC is on local WiFi GNXS-2.4G-C457E1",
+          "3. Read assigned IP address from ESP32 Body OLED screen",
+          "4. Run python run_dashboard.py",
+          "5. Open http://localhost:5000 in browser",
+          "6. Enter OLED IP into dashboard header and click REFRESH"
+        ]
       }
     },
     "firmware": {
@@ -87,7 +126,8 @@
         "output": "Directory holding generated expressive 44.1kHz 16-bit stereo PCM WAV showcase samples."
       },
       "vision": {
-        "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection."
+        "test_udp_receiver.py": "Standalone UDP test receiver with MobileNet-SSD object detection. Dynamic path resolution ensures models/MobileNetSSD_deploy.prototxt and caffemodel are loaded correctly regardless of working directory.",
+        "test_udp_receiver_yolo.py": "Standalone UDP test receiver with real-time YOLOv8 object detection (ultralytics integration, configurable confidence, image size, and device set to 'cpu' by default to prevent torchvision CUDA NMS kernel mismatches)."
       },
       "mic": {
         "test_mic_stt.py": "Microphone enumeration, PyAudio hardware test, and Google Web Speech API speech-to-text trial."
@@ -95,6 +135,15 @@
       "robot": {
         "test_robot.py": "WebSocket command tester script.",
         "test_socket.py": "TCP port 81 reachability tester script."
+      }
+    },
+    "docs": {
+      "path": "docs/",
+      "purpose": "Comprehensive system documentation, architecture specifications, interactive HTML diagrams, and operational guides.",
+      "files": {
+        "HOW_IKRU_WORKS.md": "In-depth architecture specification and component interaction manual for IKRU.",
+        "README.md": "High-level overview and quick-start documentation for the IKRU project.",
+        "diagrams": "Interactive HTML/JSON diagrams covering system architecture, use case, class structure, activity, sequence, and DFD levels 1-3."
       }
     }
   }

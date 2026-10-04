@@ -69,7 +69,7 @@ ollama
 omegaconf
 onnx
 onnxruntime
-opencv-python
+opencv-python>=4.8,<5  # 5.x removed cv2.dnn.readNetFromCaffe (used by tests/vision)
 orjson
 packaging
 pandas

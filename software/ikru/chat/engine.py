@@ -1,18 +1,21 @@
 import json
+import re
 import threading
 import ollama
+from ikru import config
 from .prompts import SYSTEM_PROMPT
-from .parser import parse_segments, parse_llm_json
+from .parser import parse_segments, parse_llm_json, StreamSentenceParser
 
 
 class ChatEngine:
     """
     Main conversational engine interfacing with local Ollama LLM (Qwen 2.5 3B).
-    Integrates persistent memory via MemoryManager (SQLite + Qdrant).
+    Integrates persistent memory via MemoryManager (SQLite + Qdrant) and supports
+    both synchronous and sub-second streaming inference modes.
     """
 
-    def __init__(self, model="qwen2.5:3b", memory=None, keep_alive="30m"):
-        self.model = model
+    def __init__(self, model=None, memory=None, keep_alive="30m"):
+        self.model = model or getattr(config, 'OLLAMA_MODEL', 'qwen2.5:3b')
         self.memory = memory
         self.keep_alive = keep_alive
         # Guards self.messages — the autonomous brain appends from its own thread
@@ -159,4 +162,97 @@ class ChatEngine:
 
         return tools, response_text, segments
 
+    def ask_stream(self, user_input, visual_context=None):
+        """
+        Streaming generator yielding (event_type, data) tuples:
+          - ("token", token_str)
+          - ("sentence", (emotion, sentence_text))
+          - ("done", (tools, full_response_text))
+        """
+        with self._messages_lock:
+            if len(self.messages) > 11:
+                self.messages = [self.messages[0]] + self.messages[-10:]
+
+            augmented_input = (
+                f"[Camera Visual Observation: {visual_context.strip()}]\nUser: {user_input}"
+                if visual_context else user_input
+            )
+            self.messages.append({"role": "user", "content": augmented_input})
+
+        sentence_parser = StreamSentenceParser()
+        full_text_acc = ""
+        last_clean_len = 0
+
+        def _extract_response_content(raw: str) -> str:
+            if '"response":' in raw:
+                idx = raw.find('"response":')
+                val = raw[idx + len('"response":'):].lstrip()
+                if val.startswith('"'):
+                    val = val[1:]
+                # Strip trailing json brackets/quotes
+                val = re.sub(r'"\s*\}?$', '', val)
+                return val
+            elif not raw.strip().startswith("{"):
+                return raw
+            return ""
+
+        try:
+            try:
+                stream = ollama.chat(
+                    model=self.model,
+                    messages=self.messages,
+                    stream=True,
+                    options={"num_predict": 90, "num_ctx": 1024, "temperature": 0.7}
+                )
+            except Exception as e:
+                fallback = getattr(config, 'OLLAMA_FALLBACK_MODEL', self.model)
+                print(f"[ChatEngine] Model {self.model} error ({e}), falling back to {fallback}...")
+                self.model = fallback
+                stream = ollama.chat(
+                    model=self.model,
+                    messages=self.messages,
+                    stream=True,
+                    options={"num_predict": 90, "num_ctx": 1024, "temperature": 0.7}
+                )
+            for chunk in stream:
+                token = chunk.get("message", {}).get("content", "")
+                if not token:
+                    continue
+                full_text_acc += token
+
+                current_clean = _extract_response_content(full_text_acc)
+                if len(current_clean) > last_clean_len:
+                    delta = current_clean[last_clean_len:]
+                    last_clean_len = len(current_clean)
+
+                    yield ("token", delta)
+                    completed = sentence_parser.feed(delta)
+                    for sentence_str in completed:
+                        parsed = parse_segments(sentence_str)
+                        for emo, text in parsed:
+                            yield ("sentence", (emo, text))
+
+            # Flush remaining sentence buffer
+            remaining = sentence_parser.flush()
+            for sentence_str in remaining:
+                clean_sent = re.sub(r'[\"\}]', '', sentence_str).strip()
+                if clean_sent:
+                    parsed = parse_segments(clean_sent)
+                    for emo, text in parsed:
+                        yield ("sentence", (emo, text))
+
+        except Exception as e:
+            print(f"[ChatEngine] Stream error: {e}")
+            fallback_msg = "[sad]I am having a moment of trouble thinking right now. [sigh]"
+            full_text_acc = fallback_msg
+            yield ("sentence", ("sad", fallback_msg))
+
+        tools, clean_response = parse_llm_json(full_text_acc)
+        with self._messages_lock:
+            self.messages.append({
+                "role": "assistant",
+                "content": json.dumps({"tools": tools, "response": clean_response})
+            })
+
+        yield ("done", (tools, clean_response))
 

@@ -1,3 +1,4 @@
+import os
 import socket
 import struct
 import time
@@ -29,15 +30,23 @@ FRAME_TIMEOUT = 0.15
 # MODEL
 # ============================================================
 
-MODEL_PROTO = (
-    "tests/vision/models/"
-    "MobileNetSSD_deploy.prototxt"
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
-MODEL_WEIGHTS = (
-    "tests/vision/models/"
-    "MobileNetSSD_deploy.caffemodel"
-)
+POSSIBLE_PROTO_PATHS = [
+    os.path.join(SCRIPT_DIR, "models", "MobileNetSSD_deploy.prototxt"),
+    os.path.join(PROJECT_ROOT, "tests", "vision", "models", "MobileNetSSD_deploy.prototxt"),
+    "tests/vision/models/MobileNetSSD_deploy.prototxt",
+]
+
+POSSIBLE_WEIGHTS_PATHS = [
+    os.path.join(SCRIPT_DIR, "models", "MobileNetSSD_deploy.caffemodel"),
+    os.path.join(PROJECT_ROOT, "tests", "vision", "models", "MobileNetSSD_deploy.caffemodel"),
+    "tests/vision/models/MobileNetSSD_deploy.caffemodel",
+]
+
+MODEL_PROTO = next((p for p in POSSIBLE_PROTO_PATHS if os.path.isfile(p)), POSSIBLE_PROTO_PATHS[0])
+MODEL_WEIGHTS = next((w for w in POSSIBLE_WEIGHTS_PATHS if os.path.isfile(w)), POSSIBLE_WEIGHTS_PATHS[0])
 
 
 print("[MODEL] Loading MobileNet-SSD...")
