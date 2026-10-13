@@ -89,13 +89,19 @@ class _BeaconListener(threading.Thread):
         self._stop_event.set()
 
 
-def _probe(host, port, timeout):
-    """Returns the resolved IP if ws port answers, else None."""
+def _probe(host, port, timeout, deadline=None):
+    """Returns the resolved IP if ws port answers, else None. Retries until
+    `deadline` (monotonic) so a briefly busy ESP32 isn't written off."""
     try:
         ip = host if netinfo.is_ip(host) else socket.gethostbyname(host)
     except Exception:
         return None
-    return ip if netinfo.check_tcp_port(ip, port, timeout) else None
+    while True:
+        if netinfo.check_tcp_port(ip, port, timeout):
+            return ip
+        if deadline is None or time.monotonic() + 0.3 >= deadline:
+            return None
+        time.sleep(0.3)
 
 
 def _dedupe(hosts):
@@ -115,15 +121,19 @@ def find_robot(hint_hosts=None, port=81, timeout=3.0, probe_timeout=0.8, beacon_
     beacon = _BeaconListener(beacon_port)
     beacon.start()
     pool = ThreadPoolExecutor(max_workers=max(1, len(hosts)), thread_name_prefix="ikru-probe")
-    pending = [pool.submit(_probe, host, port, probe_timeout) for host in hosts]
+    pending = [pool.submit(_probe, host, port, probe_timeout, deadline) for host in hosts]
     beacon_ip = None
+    last_beacon_check = 0.0
 
     try:
         while time.monotonic() < deadline:
-            if beacon.result and beacon_ip is None:
+            if beacon.result:
                 beacon_ip = beacon.result.ip
-                if netinfo.check_tcp_port(beacon_ip, port, probe_timeout):
-                    return beacon.result
+                now = time.monotonic()
+                if now - last_beacon_check >= 0.5:
+                    last_beacon_check = now
+                    if netinfo.check_tcp_port(beacon_ip, port, probe_timeout):
+                        return beacon.result
 
             # Results in hint priority order, so a configured IP beats a stale one
             while pending and pending[0].done():

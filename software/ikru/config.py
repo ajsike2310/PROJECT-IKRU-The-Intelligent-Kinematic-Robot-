@@ -39,7 +39,7 @@ CAM_VIDEO_PORT = int(os.getenv("IKRU_CAM_VIDEO_PORT", "2222"))
 CAM_DISCOVERY_PORT = int(os.getenv("IKRU_CAM_DISCOVERY_PORT", "2223"))
 
 # ── LLM / Ollama Configuration ──────────────────────────────
-OLLAMA_MODEL = os.getenv("IKRU_LLM_MODEL", "qwen2.5:1.5b")
+OLLAMA_MODEL = os.getenv("IKRU_LLM_MODEL", "qwen2.5:3b")
 OLLAMA_FALLBACK_MODEL = "qwen2.5:3b"
 OLLAMA_HOST = os.getenv("IKRU_OLLAMA_HOST", "http://127.0.0.1:11434")
 

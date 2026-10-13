@@ -5,7 +5,7 @@
     "software": {
       "path": "software/ikru/",
       "packages": {
-        "config.py": "Centralized system configuration defining network defaults, hardware IPs, Ollama LLM parameters, audio settings, and streaming latency targets.",
+        "config.py": "Centralized system configuration defining network defaults, hardware IPs, Ollama LLM parameters (defaulting to qwen2.5:3b), audio settings, and streaming latency targets.",
         "connection.py": "ConnectionManager class implementing a deterministic connection state machine (DISCONNECTED -> CONFIG_LOADING -> HARDWARE_PROBING -> CONNECTING -> VERIFYING -> READY -> DEGRADED), non-blocking TCP probing, Wi-Fi interface discovery, and fault isolation across Robot Body (port 81), ESP32-CAM (ports 2222/2223), and Ollama LLM (port 11434).",
         "audio": {
           "__init__.py": "Exposes AudioService.",

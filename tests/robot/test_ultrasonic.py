@@ -1,11 +1,9 @@
 """
 ===============================================================================
-PROJECT IKRU — ULTRASONIC SENSOR & SAFETY BRAKE DIAGNOSTIC TOOL
+PROJECT IKRU — ULTRASONIC SENSOR LIVE DISTANCE
 ===============================================================================
-Connects to the ESP32 Controller via WebSocket and tests:
-1. Real-time ultrasonic distance readings (HC-SR04 / HC-SR04P on GPIO 18/19).
-2. Live visual terminal distance meter.
-3. Autonomous safety emergency brake (auto-stopping when distance < 12cm).
+Connects to the ESP32 Controller via WebSocket and shows the ultrasonic
+distance (HC-SR04 on GPIO 18/19) in real time. Press Ctrl+C to exit.
 ===============================================================================
 """
 
@@ -26,24 +24,29 @@ except ImportError:
     sys.exit(1)
 
 
-def render_distance_bar(dist_cm, max_cm=100, bar_length=30):
-    if dist_cm < 0 or dist_cm >= 999:
-        return "[ Out of Range / Timeout ]"
-    
-    clamped = max(0.0, min(float(dist_cm), float(max_cm)))
-    filled_len = int(round(bar_length * (clamped / max_cm)))
-    bar = "█" * filled_len + "░" * (bar_length - filled_len)
-    return f"[{bar}] {dist_cm:5.1f} cm"
+def read_distance(ws, timeout=1.5):
+    """Send GET_DISTANCE and wait for the {"type":"distance"} reply, skipping
+    other broadcasts (obstacle_alert etc.). Returns cm, or None on timeout."""
+    ws.send("GET_DISTANCE")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ws.settimeout(max(0.05, deadline - time.time()))
+        try:
+            reply = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            return None
+        if not reply or "distance" not in reply:
+            continue
+        try:
+            data = json.loads(reply)
+        except ValueError:
+            continue
+        if data.get("type") == "distance":
+            return float(data.get("cm", -1.0))
+    return None
 
 
 def test_ultrasonic(ip=HUB_ROBOT_IP, port=81):
-    ws = None
-    connected_ip = None
-
-    print("\n" + "=" * 65)
-    print("  PROJECT IKRU — Ultrasonic Sensor & Safety Brake Diagnostic")
-    print("=" * 65)
-
     result = find_robot([ip], port=port)
     if isinstance(result, Diagnosis):
         print(f"[-] Could not find the robot: {result.message}")
@@ -53,119 +56,43 @@ def test_ultrasonic(ip=HUB_ROBOT_IP, port=81):
 
     ws_url = f"ws://{result.ip}:{port}/"
     try:
-        print(f"Connecting to ESP32 at {ws_url}...")
         ws = websocket.create_connection(ws_url, timeout=3.0)
-        connected_ip = result.ip
-        print(f"[+] Connected successfully to {result.describe()}!\n")
     except Exception as e:
         print(f"[-] Found {result.ip} but the WebSocket failed: {e}")
         return
 
-    print("Select Mode:")
-    print("  1. Continuous Live Distance Monitor (Wave your hand in front of sensor)")
-    print("  2. Test Safety Brake (Drives forward; verify it halts at obstacle)")
-    print("  3. Custom Obstacle Threshold Config (e.g. set to 15 cm)")
-    
+    print(f"[+] Connected to {result.describe()}. Live distance (Ctrl+C to exit):\n")
     try:
-        choice = input("\nEnter choice [1-3] (default: 1): ").strip()
-    except (KeyboardInterrupt, EOFError):
-        ws.close()
-        return
-
-    if not choice:
-        choice = "1"
-
-    if choice == "1":
-        print("\n[+] Starting live distance monitor. Press Ctrl+C to exit...\n")
-        timeout_count = 0
-        try:
-            while True:
-                try:
-                    ws.send("GET_DISTANCE")
-                    ws.settimeout(1.5)
-                    reply = ws.recv()
-                    if reply and "distance" in reply:
-                        data = json.loads(reply)
-                        dist = float(data.get("cm", -1.0))
-                        
-                        if dist < 0 or dist >= 900:
-                            timeout_count += 1
-                        else:
-                            timeout_count = 0
-
-                        status = "🟢 PATH CLEAR"
-                        if dist > 0 and dist < 12.0:
-                            status = "🔴 OBSTACLE DETECTED (<12 cm) [BRAKE ACTIVE]"
-                        elif dist > 0 and dist < 25.0:
-                            status = "🟡 APPROACHING OBJECT"
-
-                        meter = render_distance_bar(dist)
-                        
-                        hint = ""
-                        if timeout_count >= 15:
-                            hint = " 💡 [TIP: Check if VCC is connected to 5V/VIN and TRIG/ECHO are on GPIO 18/19]"
-                        
-                        print(f"\r  {meter}  |  {status}{hint}   ", end="", flush=True)
-                except (websocket.WebSocketConnectionClosedException, ConnectionResetError, OSError) as conn_err:
-                    print(f"\n[-] Connection interrupted: {conn_err}")
-                    print("[*] Reconnecting in 1 second...")
-                    time.sleep(1.0)
-                    try:
-                        ws = websocket.create_connection(ws_url, timeout=3.0)
-                        print("[+] Reconnected!")
-                    except Exception:
-                        print("[-] Reconnect failed. Robot may be rebooting.")
-                        break
-                time.sleep(0.12)
-        except KeyboardInterrupt:
-            print("\n\n[+] Live monitor stopped.")
-
-    elif choice == "2":
-        print("\n[+] Safety Brake Test:")
-        print("  Place an obstacle (like a box or your hand) ~30-40 cm in front of IKRU.")
-        print("  IKRU will drive FORWARD. If the sensor works, it will automatically STOP before hitting it!")
-        input("\nPress Enter to begin test...")
-        
-        print("\n[+] Sending FORWARD command...")
-        ws.send("FORWARD")
-        
-        start_time = time.time()
-        stopped = False
-        while time.time() - start_time < 4.0:
-            ws.send("GET_DISTANCE")
+        while True:
             try:
-                reply = ws.recv()
-                if reply and "distance" in reply:
-                    data = json.loads(reply)
-                    dist = float(data.get("cm", 999.0))
-                    print(f"  Distance: {dist:.1f} cm")
-                    if dist > 0 and dist < 12.0:
-                        print("\n[+] Success! Obstacle detected, ESP32 auto-brake engaged!")
-                        stopped = True
-                        break
-            except Exception:
-                pass
-            time.sleep(0.06)
-
-        ws.send("STOP")
-        if not stopped:
-            print("\n[*] Timed out after 4 seconds.")
-
-    elif choice == "3":
+                dist = read_distance(ws)
+                if dist is None:
+                    text = "no reply from ESP32"
+                elif dist < 0 or dist >= 900:
+                    text = "out of range"
+                else:
+                    text = f"{dist:6.1f} cm"
+                print(f"\r  Distance: {text}" + " " * 20, end="", flush=True)
+            except (websocket.WebSocketConnectionClosedException, ConnectionResetError, OSError):
+                print("\n[-] Connection lost, reconnecting...")
+                time.sleep(1.0)
+                try:
+                    ws = websocket.create_connection(ws_url, timeout=3.0)
+                except Exception:
+                    print("[-] Reconnect failed. Robot may be rebooting.")
+                    break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\n\n[+] Stopped.")
+    finally:
         try:
-            th = input("\nEnter new obstacle safety threshold in cm (e.g. 15): ").strip()
-            th_val = float(th)
-            ws.send(f"SET_OBSTACLE_THRESHOLD:{th_val:.1f}")
-            print(f"[+] Sent SET_OBSTACLE_THRESHOLD:{th_val:.1f}")
-        except ValueError:
-            print("[-] Invalid number.")
-
-    ws.close()
-    print("[+] Test completed.")
+            ws.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="IKRU Ultrasonic Diagnostic")
+    parser = argparse.ArgumentParser(description="IKRU Ultrasonic Live Distance")
     parser.add_argument("--ip", default=HUB_ROBOT_IP, help="ESP32 Controller IP")
     parser.add_argument("--port", type=int, default=81, help="WebSocket Port (default: 81)")
     args = parser.parse_args()

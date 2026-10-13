@@ -16,7 +16,7 @@
     "max_utterance_s": 12,
     "device_index": null
   },
-  "llm_model": "qwen2.5:7b",
+  "llm_model": "qwen2.5:3b",
   "vlm_model": "qwen3-vl:4b",
   "llm_keep_alive": "30m",
   "memory": {
