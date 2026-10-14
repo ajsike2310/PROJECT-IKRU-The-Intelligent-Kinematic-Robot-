@@ -2,32 +2,45 @@ import queue
 import threading
 import time
 
-import pyaudio
-import speech_recognition as sr
+import os
 
+import pyaudio
+
+from .stt import WhisperSTT
 from .vad import SAMPLE_RATE, FRAME_SAMPLES, SpeechSegmenter, load_vad
+
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 
 class MicController:
     """
     Handles microphone capture, Voice Activity Detection (Silero VAD) and
-    speech-to-text via Google Web Speech API.
+    offline speech-to-text (faster-whisper on CUDA, auto language detection).
 
     Capture and transcription run on separate threads, so the mic keeps
     listening while a previous sentence is being transcribed.
     """
     def __init__(self, vad="silero", vad_threshold=0.5, silence_ms=500,
-                 max_utterance_s=12.0, device_index=None, **_ignored):
-        self.recognizer = sr.Recognizer()
+                 max_utterance_s=12.0, device_index=None, preroll_ms=400,
+                 stt_model="small", stt_model_dir="data/models/faster-whisper-small",
+                 stt_compute_type="float16", stt_language=None, **_ignored):
         self.device_index = device_index
+        self.last_language = None   # language detected for the most recent utterance
         self._segmenter_args = dict(
             threshold=vad_threshold,
             silence_ms=silence_ms,
             max_utterance_s=max_utterance_s,
+            preroll_ms=preroll_ms,
         )
 
         print("[Audio] Initializing Microphone...")
         self.vad_name, self.vad_prob = load_vad(vad)
+        if not os.path.isabs(stt_model_dir):
+            stt_model_dir = os.path.join(_REPO_ROOT, stt_model_dir)
+        print(f"[Audio] Loading Whisper '{stt_model}' on CUDA...")
+        self.stt = WhisperSTT(stt_model_dir, stt_model, stt_compute_type, language=stt_language).load()
+        print(f"[Audio] Whisper ready in {self.stt.load_time_s:.1f}s.")
         self._pa = pyaudio.PyAudio()
         self._stream = None
         self._running = False
@@ -48,9 +61,13 @@ class MicController:
     def _read_frame(self):
         return self._open_stream().read(FRAME_SAMPLES, exception_on_overflow=False)
 
-    def _transcribe(self, pcm: bytes):
-        audio = sr.AudioData(pcm, SAMPLE_RATE, 2)
-        return self.recognizer.recognize_google(audio)
+    def _transcribe(self, pcm: bytes) -> str:
+        r = self.stt.transcribe(pcm)
+        if r is None:
+            return ""
+        self.last_language = r.language
+        print(f"  [STT] {r.language} ({r.language_probability:.2f}) {r.processing_s * 1000:.0f}ms")
+        return r.text
 
     def listen(self) -> str:
         """
@@ -67,10 +84,7 @@ class MicController:
                 print("  [Processing audio...]")
                 try:
                     return self._transcribe(pcm)
-                except sr.UnknownValueError:
-                    print("  [Could not understand audio. Try again]")
-                    return ""
-                except sr.RequestError as e:
+                except Exception as e:
                     print(f"  [STT Error: {e}]")
                     return ""
 
@@ -112,11 +126,6 @@ class MicController:
                 t0 = time.time()
                 try:
                     text = self._transcribe(pcm)
-                except sr.UnknownValueError:
-                    continue
-                except sr.RequestError as e:
-                    print(f"  [STT Error: {e}]")
-                    continue
                 except Exception as e:
                     print(f"  [STT Error: {e}]")
                     continue

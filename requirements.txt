@@ -9,6 +9,7 @@ anyio
 attrs
 audioop-lts; python_version >= "3.13"
 audioread
+av
 brotli
 catalogue
 certifi
@@ -20,6 +21,7 @@ click
 cloudpickle
 colorama
 conformer
+ctranslate2
 decorator
 Deprecated
 diffusers
@@ -29,6 +31,7 @@ edge-tts
 einops
 espeakng-loader
 fastapi
+faster-whisper
 ffmpy
 filelock
 flatbuffers

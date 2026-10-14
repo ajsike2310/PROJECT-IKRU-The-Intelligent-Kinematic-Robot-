@@ -12,9 +12,17 @@
   "mic": {
     "vad": "silero",
     "vad_threshold": 0.5,
-    "silence_ms": 500,
-    "max_utterance_s": 12,
-    "device_index": null
+    "silence_ms": 700,
+    "max_utterance_s": 15,
+    "device_index": null,
+    "preroll_ms": 400,
+    "stt_model": "small",
+    "stt_model_dir": "data/models/faster-whisper-small",
+    "stt_compute_type": "float16",
+    "stt_language": null
+  },
+  "ui": {
+    "status_bar": false
   },
   "llm_model": "qwen2.5:3b",
   "vlm_model": "qwen3-vl:4b",

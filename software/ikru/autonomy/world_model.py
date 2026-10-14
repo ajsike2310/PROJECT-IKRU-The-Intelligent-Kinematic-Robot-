@@ -44,6 +44,22 @@ _LABEL_STOPWORDS = {
 }
 
 
+def ago_phrase(seconds):
+    """85 -> 'about a minute ago', 7200 -> 'about 2 hours ago'."""
+    s = max(0.0, float(seconds))
+    if s < 45:
+        return "just now"
+    if s < 90:
+        return "about a minute ago"
+    if s < 3600:
+        return f"about {int(round(s / 60))} minutes ago"
+    if s < 86400:
+        h = int(round(s / 3600))
+        return f"about {h} hour{'s' if h != 1 else ''} ago"
+    d = int(round(s / 86400))
+    return f"about {d} day{'s' if d != 1 else ''} ago"
+
+
 def _norm_angle(deg):
     """Wraps an angle to (-180, 180]."""
     deg = (deg + 180.0) % 360.0 - 180.0
@@ -105,6 +121,8 @@ class WorldModel:
         # Landmarks — familiarity persists, positions are per session
         self.landmarks = []                # list of dicts
         self.lifetime_excursions = 0
+        # Rolling log of what the camera saw, newest last; persists across sessions
+        self.sightings = deque(maxlen=12)  # {"t", "scene", "objects"}
 
         self._visit(self.x, self.y)
         self.load()
@@ -383,6 +401,17 @@ class WorldModel:
                 if abs(rel) <= EXPECT_VIEW_DEG and math.hypot(dx, dy) <= EXPECT_VIEW_CM:
                     result["missing"].append(lm["label"])
 
+            # Remember WHERE (what it was next to) and in what scene, in words — coordinates
+            # are meaningless next session but "next to the laptop" is not.
+            for label in seen:
+                lm = self._find_landmark(label)
+                if lm is not None:
+                    lm["near"] = [o for o in seen if o != label][:3]
+                    if scene:
+                        lm["scene"] = str(scene).strip()[:120]
+            if seen or scene:
+                self.sightings.append({"t": now, "scene": str(scene or "").strip()[:160], "objects": seen[:8]})
+
             if result["new"]:
                 self._add_event("discovery", f"You discovered something new: {', '.join(result['new'])}.")
             if result["missing"]:
@@ -391,6 +420,44 @@ class WorldModel:
                 self._add_event("sight", f"You saw: {str(scene).strip()[:140]}")
         self.save()
         return result
+
+    # ------------------------------------------------------------------ #
+    # Recall: "where did I last see X?" and "what did I see lately?"
+    # ------------------------------------------------------------------ #
+
+    def recall(self, label):
+        """Last known sighting of an object (persisted across sessions), or None if never seen."""
+        with self._lock:
+            lm = self._find_landmark(clean_label(label))
+            if lm is None or not lm.get("last_seen"):
+                return None
+            return {"label": lm["label"], "ago_s": max(0.0, time.time() - lm["last_seen"]),
+                    "near": list(lm.get("near") or []), "scene": lm.get("scene", ""),
+                    "times_seen": lm.get("times_seen", 1)}
+
+    def recall_line(self, label):
+        """One plain sentence about the last sighting of `label`, or None."""
+        r = self.recall(label)
+        if r is None:
+            return None
+        line = f"you last saw the {r['label']} {ago_phrase(r['ago_s'])}"
+        if r["near"]:
+            line += f", near the {' and the '.join(r['near'][:2])}"
+        if r["scene"]:
+            line += f" (the view then: {r['scene']})"
+        return line
+
+    def recent_sightings(self, max_age_s=3600.0, n=3):
+        """Compact lines about the latest camera views, newest last."""
+        now = time.time()
+        with self._lock:
+            items = [s for s in self.sightings if now - s["t"] <= max_age_s][-n:]
+        lines = []
+        for s in items:
+            what = s["scene"] or ("saw " + ", ".join(s["objects"]))
+            objs = f" [objects: {', '.join(s['objects'])}]" if s["objects"] and s["scene"] else ""
+            lines.append(f"{ago_phrase(now - s['t'])}: {what}{objs}")
+        return lines
 
     # ------------------------------------------------------------------ #
     # Events & summary
@@ -462,6 +529,11 @@ class WorldModel:
                     for lm in data.get("landmarks", []) if lm.get("label")
                 ]
                 self.lifetime_excursions = int(data.get("lifetime_excursions", 0))
+                self.sightings.clear()
+                for s in data.get("sightings", [])[-12:]:
+                    if isinstance(s, dict) and s.get("t"):
+                        self.sightings.append({"t": float(s["t"]), "scene": str(s.get("scene", "")),
+                                               "objects": list(s.get("objects", []))})
         except Exception as e:
             print(f"[WorldModel] Could not load {os.path.basename(self.persist_path)}: {e}")
 
@@ -472,9 +544,11 @@ class WorldModel:
             with self._lock:
                 data = {
                     "landmarks": [
-                        {k: lm[k] for k in ("label", "times_seen", "sessions", "first_seen", "last_seen") if k in lm}
+                        {k: lm[k] for k in ("label", "times_seen", "sessions", "first_seen", "last_seen",
+                                            "near", "scene") if k in lm}
                         for lm in sorted(self.landmarks, key=lambda lm: -lm.get("last_seen", 0))[:60]
                     ],
+                    "sightings": list(self.sightings),
                     "lifetime_excursions": self.lifetime_excursions,
                 }
             os.makedirs(os.path.dirname(self.persist_path), exist_ok=True)

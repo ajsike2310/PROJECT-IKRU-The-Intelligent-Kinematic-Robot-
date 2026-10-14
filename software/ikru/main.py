@@ -20,7 +20,9 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from ikru.chat import ChatEngine
-from ikru.chat.tool_router import LayaToolRouter, merge_tool_calls
+from ikru.chat.tool_router import (
+    LayaToolRouter, merge_tool_calls, extract_search_target, is_where_question, is_seen_lately_question,
+)
 from ikru.robot import RobotController, IdleManager, ProximityMonitor
 from ikru.autonomy import AutonomousBrain
 from ikru.vision import VisionReceiver, VLMClient
@@ -82,6 +84,7 @@ VLM_MODEL = config_data.get("vlm_model", "qwen3-vl:4b")
 LLM_KEEP_ALIVE = config_data.get("llm_keep_alive", "30m")
 MIC_CONFIG = config_data.get("mic", {})
 AUTONOMOUS_CONFIG = config_data.get("autonomous", {})
+UI_CONFIG = config_data.get("ui", {})
 TOOL_ROUTER_CONFIG = config_data.get("tool_router", {})
 
 # Only clearly visual requests trigger the camera VLM (loading it evicts the chat LLM from VRAM)
@@ -233,6 +236,7 @@ def main():
     parser.add_argument("--voice-prompt", default=None, help="Reference WAV file for Chatterbox zero-shot voice cloning")
     parser.add_argument("--lang", default=None, help="Language code for Chatterbox Multilingual TTS (e.g. 'fr', 'zh', 'es')")
     parser.add_argument("--no-mic", action="store_true", help="Disable microphone and use text typing")
+    parser.add_argument("--no-ui", action="store_true", help="Plain terminal output (no banner, mascot or status bar)")
     parser.add_argument("--no-vision", action="store_true", help="Disable UDP vision camera feed")
     parser.add_argument("--no-wizard", "--no-wifi-setup", dest="no_wizard", action="store_true", help="Skip the interactive connection menu if the robot isn't found")
     parser.add_argument("--provision-wifi", action="store_true", help="Send new Wi-Fi credentials to the robot after connecting")
@@ -243,17 +247,25 @@ def main():
     enable_vision = ENABLE_VISION and not args.no_vision
     enable_mic = ENABLE_MIC and not args.no_mic
 
-    print("\n" + "=" * 50)
-    print("  PROJECT IKRU — Robotic Assistant")
-    print(f"  Robot: {args.ip}  |  Camera: {target_cam_ip}")
-    print(f"  Voice Mode: {args.voice_mode.upper()} {'(Instant Glissando Droid Speaker)' if args.voice_mode == 'r2d2' else f'({args.tts_engine.upper()})'}")
-    print(f"  Speaker Volume: {args.volume}%")
-    if args.voice_prompt:
-        print(f"  Voice Prompt: {args.voice_prompt}")
-    if args.lang:
-        print(f"  Language: {args.lang}")
-    print("  Type 'exit' to quit")
-    print("=" * 50)
+    from ikru.ui import TerminalUI
+    ui = TerminalUI(
+        enabled=UI_CONFIG.get("enabled", True) and not args.no_ui,
+        status_bar=UI_CONFIG.get("status_bar", True),
+        show_mascot=UI_CONFIG.get("mascot", True),
+        mascot_path=os.path.join(os.path.dirname(CONFIG_FILE), "data", "ascii-art.png"),
+        internet_check=UI_CONFIG.get("internet_check", True),
+        mascot_style=UI_CONFIG.get("mascot_style", "sprite"),
+    )
+    ui.start()
+    info = [
+        f"robot {args.ip}   camera {target_cam_ip}",
+        f"brain {LLM_MODEL}   vision {VLM_MODEL}",
+        f"stt whisper-{MIC_CONFIG.get('stt_model', 'small')} (offline)",
+        f"voice {args.voice_mode.upper()} {'(droid speaker)' if args.voice_mode == 'r2d2' else '(' + args.tts_engine.upper() + ')'}   volume {args.volume}%"
+        + (f"   lang {args.lang}" if args.lang else ""),
+        "say 'exit' (or type it) to quit",
+    ]
+    ui.banner(info)
 
     # ============================================================
     # STEP 1: Structured bring-up
@@ -280,6 +292,7 @@ def main():
         on_connect=_on_robot_connect,
         connect_now=False,
     )
+    ui.robot = robot
     bringup.link_body(robot)
 
     # ============================================================
@@ -445,6 +458,7 @@ def main():
 
         def on_speech_start():
             if not busy.is_set():
+                ui.set_state("listening")
                 idle_manager.notify_activity()
                 # Someone's talking: stop roaming and listen (ignore IKRU's own chirps)
                 if not autonomous_brain.is_vocalizing():
@@ -457,6 +471,7 @@ def main():
     # SETUP COMPLETE: robot plays its ready animation, face wakes up
     # --------------------------------------------------------
     bringup.finish()
+    ui.set_state("idle")
     app_ready.set()
     robot.setup_done()
     time.sleep(2.5)  # let the ready animation finish before the first expression
@@ -516,6 +531,8 @@ def main():
             if _is_exit(user_input):
                 # Sleepy Exit Routine (just animation and sound)
                 print("\n[IKRU] Going to sleep...")
+                ui.set_emotion("sleepy", 30)
+                ui.set_state("sleeping")
                 robot.sleepy()
                 robot.play_sound("SIGH")
                 time.sleep(1.0)
@@ -526,6 +543,7 @@ def main():
             if hasattr(robot, "thinking"):
                 robot.thinking()
             print("  [Thinking...]")
+            ui.set_state("thinking")
 
             # Laya decides the physical action; urgent ones (stop / cancel search) run the
             # moment it answers — typically long before the LLM has finished its reply.
@@ -591,13 +609,34 @@ def main():
             if prox_context:
                 print(f"[Proximity] Context: {prox_context}")
 
+            # Visual memory: "where's my mug?" / "what did you see?" are answered from what IKRU
+            # already remembers seeing; a physical search only starts if it has never seen the thing.
+            memory_answer = None
+            skip_actions = set(executed_now)
+            try:
+                if is_where_question(user_input):
+                    target = extract_search_target(user_input)
+                    line = autonomous_brain.recall_object(target) if target else None
+                    if line:
+                        memory_answer = (f"[Visual Memory: {line}. Answer the user's question from this in one "
+                                         "short sentence. Do NOT start a search.]")
+                        skip_actions |= {"search_object", "find_object", "search"}
+                        print(f"[Memory] {line}")
+                elif is_seen_lately_question(user_input):
+                    seen_lately = autonomous_brain.recent_sightings_text(max_age_s=6 * 3600, n=3)
+                    if seen_lately:
+                        memory_answer = ("[Visual Memory - what you saw recently, oldest first: "
+                                         f"{seen_lately}. Answer from this briefly.]")
+            except Exception as e:
+                print(f"[Memory] Visual recall error: {e}")
+
             # Query Chat LLM
             t_llm = time.time()
             tools, response_text, segments = chat.ask(
                 user_input,
                 visual_context=visual_context,
                 sensor_context=prox_context,
-                action_context=decision.context_line() if decision else None,
+                action_context=memory_answer or (decision.context_line() if decision else None),
             )
             t_done = time.time()
             if laya_future is not None:
@@ -605,7 +644,7 @@ def main():
                     decision = laya_future.result(timeout=5.0)
                 except Exception as e:
                     print(f"[Laya] No decision ({e}) - using LLM tool calls.")
-            tools = merge_tool_calls(decision, tools, skip_actions=executed_now)
+            tools = merge_tool_calls(decision, tools, skip_actions=skip_actions)
             timing = f"prep {int((t_llm - t_turn) * 1000)}ms | LLM {int((t_done - t_llm) * 1000)}ms"
             if t_heard:
                 timing += f" | end-of-speech → reply {t_done - t_heard:.1f}s"
@@ -615,6 +654,9 @@ def main():
             thinking_event.set()
 
             # Display speech, stream natural voice, and animate face on OLED
+            ui.set_state("speaking")
+            if segments and segments[0][0]:
+                ui.set_emotion(segments[0][0])
             try:
                 robot.speak_segments(segments, audio_service=audio_service, interrupt_event=interrupt_event)
             except Exception as e:
@@ -671,7 +713,9 @@ def main():
             display_text = re.sub(r'\s+', ' ', display_text).strip()
             emotions_list = [emo.upper() for emo, _ in segments if emo]
             emotions_str = f" [{ ' / '.join(dict.fromkeys(emotions_list)) }]" if emotions_list else ""
-            print(f"\nAssistant{emotions_str}: {display_text}")
+            if not ui.say(emotions_list[0].lower() if emotions_list else "normal", display_text):
+                print(f"\nAssistant{emotions_str}: {display_text}")
+            ui.set_state("idle")
 
             # Short echo guard: speech that ended within 0.3 s of IKRU finishing is ignored
             busy_until[0] = time.time() + 0.3
@@ -696,6 +740,7 @@ def main():
         print("\n[IKRU] Exiting...")
     finally:
         print("\n[IKRU] Shutting down...")
+        ui.stop()
         if stop_listening:
             stop_listening(wait_for_stop=False)
         if audio_service:

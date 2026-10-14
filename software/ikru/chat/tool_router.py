@@ -76,7 +76,7 @@ _DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 _SEARCH_RE = re.compile(
-    r"\b(?:find|look(?:ing)? for|search(?:ing)? for|locate|where(?:'s| is| are)|hunt for|spot)\s+"
+    r"\b(?:find|look(?:ing)? for|search(?:ing)? for|locate|where(?:'s| is| are)|hunt for|spot|did you see|have you seen)\s+"
     r"(?:(?:my|the|a|an|our|your|his|her|their|some)\s+)*([a-z][a-z0-9 \-]{1,40}?)"
     r"(?:\s+(?:please|for me|on the desk|on the table|around here|nearby|now|again))*\s*[?.!]*$",
     re.IGNORECASE,
@@ -107,6 +107,22 @@ def extract_search_target(text):
         return None
     target = re.sub(r"\s+", " ", m.group(1)).strip(" -")
     return target or None
+
+
+_WHERE_RE = re.compile(r"\b(?:where(?:'s| is| are| was| did)|did you (?:see|notice)|have you seen)\b", re.IGNORECASE)
+_SEEN_LATELY_RE = re.compile(
+    r"\b(?:what (?:did|have) you (?:see|seen|notice|noticed)|what was (?:on|there)|anything (?:new|interesting)|"
+    r"what('s| has) (?:changed|been going on)|while i was (?:away|gone|out))\b", re.IGNORECASE)
+
+
+def is_where_question(text):
+    """'where's my mug?' / 'did you see my keys' -> True (a question about a remembered place, not a command)."""
+    return bool(_WHERE_RE.search(text or ""))
+
+
+def is_seen_lately_question(text):
+    """'what did you see earlier?' -> True."""
+    return bool(_SEEN_LATELY_RE.search(text or ""))
 
 
 class ToolDecision:

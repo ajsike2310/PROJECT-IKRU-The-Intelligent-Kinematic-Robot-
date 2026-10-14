@@ -1,7 +1,10 @@
+import re
 import time
 import random
+import difflib
 import threading
 from collections import deque
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 import ollama
@@ -13,12 +16,9 @@ from .config import (
     MAX_AUTONOMOUS_MOVE_S, FORWARD_SAFETY_DISTANCE_CM, SAFE_SEQUENCES, STARTLE_CM, SONAR_SETTLE_S,
     LOOK_AROUND_PROBABILITY, OBSERVE_WITH_CAMERA_PROBABILITY, THOUGHT_MAX_AGE_S, OBSERVATION_MAX_AGE_S,
     ATTENTION_HOLD_S, ECHO_GUARD_S, ENERGY_DRAIN_PER_S, ENERGY_RECHARGE_PER_S, ENERGY_TO_ROAM,
-    ENERGY_TIRED, BORED_EXPLORED_FRACTION,
+    ENERGY_TIRED, BORED_EXPLORED_FRACTION, SCENE_REUSE_S, THOUGHT_LLM_OPTIONS, THOUGHT_SIMILARITY_LIMIT,
 )
-from .hints import (
-    MODE_HINTS_WITH_VISION, MODE_HINTS_WITHOUT_VISION, ROAM_HINTS, SURPRISE_HINTS,
-    TIRED_HINT, WIND_DOWN_HINTS,
-)
+from .hints import FOCUS_HINTS, SURPRISE_HINTS, TIRED_HINT, WIND_DOWN_HINTS
 from .world_model import WorldModel
 from .locomotion import Locomotion
 from .search import SearchTask, ObjectSearcher
@@ -107,7 +107,9 @@ class AutonomousBrain:
 
         self.energy = 1.0
         self.state = "resting"
-        self._recent_thoughts = deque(maxlen=6)
+        self._recent_thoughts = deque(maxlen=10)
+        self._focus_history = deque(maxlen=2)     # last focuses used, so topics rotate
+        self._last_scene = None                   # (description, timestamp) of the latest camera view
         self._last_vision_time = 0.0
         self._urgent_hint = None
         self._pending = None
@@ -228,6 +230,7 @@ class AutonomousBrain:
         now = time.time()
         next_rest_thought = now + random.uniform(self.min_interval, self.max_interval)
         next_excursion = now + random.uniform(5.0, 15.0)
+        next_glance = now + 5.0
         last_tick = now
 
         while self._is_running():
@@ -260,6 +263,10 @@ class AutonomousBrain:
                 elif now >= next_rest_thought:
                     self._act()
                     next_rest_thought = time.time() + random.uniform(self.min_interval, self.max_interval)
+                    next_glance = time.time() + self.cfg["glance_s"]
+                elif self.cfg["glance_s"] > 0 and now >= next_glance and quiet_for >= 15.0:
+                    self._glance()
+                    next_glance = time.time() + self.cfg["glance_s"]
             except Exception as e:
                 print(f"[Autonomous] Cycle error: {e}")
                 self.loco.stop()
@@ -268,23 +275,78 @@ class AutonomousBrain:
     # Context Gathering
     # ------------------------------------------------------------------ #
 
+    def _remember_scene(self, desc):
+        if desc:
+            self._last_scene = (desc.strip(), time.time())
+
+    def _recent_scene(self):
+        """The latest camera description if it is still fresh enough to count as 'right now'."""
+        if self._last_scene and time.time() - self._last_scene[1] <= SCENE_REUSE_S:
+            return self._last_scene[0]
+        return None
+
     def _gather_vision_context(self):
-        """Grab a JPEG frame and run VLM description with configured probability."""
+        """
+        What IKRU sees right now. Takes a new camera snapshot (VLM) when the camera and VLM are
+        available and the last one is older than vision_min_gap_s (the VLM shares VRAM with the
+        chat LLM, so it can't run constantly); otherwise reuses a still-fresh description.
+        """
         if not (self.vision and self.vlm):
             return None
-        if random.random() >= self.vision_probability:
-            return None
+        if time.time() - self._last_vision_time < self.cfg["vision_min_gap_s"]:
+            return self._recent_scene()
         try:
             jpeg = self.vision.buffer.get_jpeg_bytes()
             if not jpeg:
-                return None
-            desc = self.vlm.describe_scene(jpeg)
-            if desc:
-                print(f"[Autonomous] Vision snapshot: {desc}")
-            return desc
+                return self._recent_scene()
+            self._last_vision_time = time.time()
+            return self._observe(jpeg) or self._recent_scene()
         except Exception as e:
             print(f"[Autonomous] Vision context error: {e}")
+            return self._recent_scene()
+
+    def _observe(self, jpeg):
+        """
+        One camera look: names the objects + describes the scene, and files both into the world
+        model (so IKRU remembers what it saw and where). Returns (and remembers) the scene text.
+        """
+        result = None
+        if hasattr(self.vlm, "list_objects"):
+            result = self.vlm.list_objects(jpeg)
+        else:
+            desc = self.vlm.describe_scene(jpeg)
+            result = {"scene": desc, "objects": []} if desc else None
+        if not result:
             return None
+        scene = result.get("scene")
+        objects = result.get("objects") or []
+        if scene or objects:
+            print(f"[Autonomous] Saw: {scene} | objects: {objects}")
+            self._remember_scene(scene)
+            self.world.observe_objects(objects, scene)
+        return scene
+
+    def recall_object(self, target):
+        """Where/when IKRU last saw `target`, as one sentence (None if it never has)."""
+        return self.world.recall_line(target)
+
+    def recent_sightings_text(self, max_age_s=3600.0, n=3):
+        lines = self.world.recent_sightings(max_age_s=max_age_s, n=n)
+        return "; ".join(lines) if lines else None
+
+    def _glance(self):
+        """A quiet look at the desk while resting: updates what IKRU remembers, says nothing."""
+        if not (self.vision and self.vlm):
+            return
+        if time.time() - self._last_vision_time < self.cfg["vision_min_gap_s"]:
+            return
+        try:
+            jpeg = self.vision.buffer.get_jpeg_bytes()
+            if jpeg:
+                self._last_vision_time = time.time()
+                self._observe(jpeg)
+        except Exception as e:
+            print(f"[Autonomous] Glance error: {e}")
 
     def _gather_proximity_context(self):
         if not self.proximity_monitor:
@@ -294,14 +356,47 @@ class AutonomousBrain:
         except Exception:
             return None
 
-    def _gather_memory_context(self):
-        """Recall recent thoughts / facts so autonomous mode has continuity."""
+    def _atmosphere_context(self):
+        """Live facts about the moment: clock, how long since the human interacted, IKRU's energy."""
+        now = datetime.now()
+        h = now.hour
+        part = ("late night" if h < 5 else "early morning" if h < 9 else "morning" if h < 12
+                else "afternoon" if h < 17 else "evening" if h < 21 else "night")
+        quiet_min = int((time.time() - self._last_user_activity) / 60)
+        human = ("your human interacted with you moments ago" if quiet_min < 1
+                 else f"your human last interacted with you about {quiet_min} minute(s) ago")
+        energy = "full of energy" if self.energy > 0.7 else "a little tired" if self.energy > 0.3 else "very tired"
+        return (f"[Atmosphere: it is {now.strftime('%A %H:%M')} ({part}); {human}; "
+                f"you feel {energy}; you are currently {self.state}.]")
+
+    def _gather_memory_context(self, scene=None):
+        """What IKRU knows about its human: facts, what they said lately, memories related to the scene."""
         if not self.memory:
             return None
+        parts = []
         try:
-            return self.memory.build_memory_context("recent thoughts and observations")
+            facts = [f["fact"] for f in self.memory.db.get_all_facts()[:6]]
+            if facts:
+                parts.append("Known facts: " + "; ".join(facts))
         except Exception:
-            return None
+            pass
+        try:
+            msgs = self.memory.db.get_recent_messages(limit=12)
+            said = [m["content"].strip() for m in msgs
+                    if m.get("role") == "user" and m.get("content") and not m["content"].startswith("[")][-3:]
+            if said:
+                parts.append("They recently said: " + " | ".join(f'"{t[:120]}"' for t in said))
+        except Exception:
+            pass
+        if scene:
+            try:
+                recalled = self.memory.vector.search_memories(scene, top_k=4, score_threshold=0.55)
+                texts = [m.get("text", "") for m in recalled if "[autonomous thought]" not in m.get("text", "")]
+                if texts:
+                    parts.append("Related memories: " + " | ".join(t[:120] for t in texts[:2]))
+            except Exception:
+                pass
+        return f"[About your human: {'. '.join(parts)}]" if parts else None
 
     def _minutes_since_last(self):
         if self._last_thought_time == 0.0:
@@ -312,9 +407,16 @@ class AutonomousBrain:
     # Prompt Construction
     # ------------------------------------------------------------------ #
 
+    def _pick_focus(self, has_vision):
+        """Chooses which real part of the context to talk about, rotating away from recent focuses."""
+        keys = ["atmosphere", "human", "self"] + (["sight"] if has_vision else [])
+        fresh = [k for k in keys if k not in self._focus_history] or keys
+        key = random.choice(fresh)
+        self._focus_history.append(key)
+        return (key, FOCUS_HINTS[key])
+
     def _pick_mode(self, has_vision):
-        options = MODE_HINTS_WITH_VISION if has_vision else MODE_HINTS_WITHOUT_VISION
-        return random.choice(options)
+        return self._pick_focus(has_vision)
 
     def _pick_roam_hint(self):
         if self._urgent_hint:
@@ -322,9 +424,7 @@ class AutonomousBrain:
             return hint
         if self.energy < ENERGY_TIRED + 0.15:
             return TIRED_HINT
-        weights = [w for w, _, _ in ROAM_HINTS]
-        _, key, text = random.choices(ROAM_HINTS, weights=weights, k=1)[0]
-        return (key, text)
+        return self._pick_focus(has_vision=bool(self._recent_scene()))
 
     def _build_trigger(self, vision_ctx, prox_ctx, memory_ctx, mode_hint, roaming=False):
         parts = []
@@ -334,29 +434,32 @@ class AutonomousBrain:
             parts.append(f"[Camera Visual Observation: {vision_ctx.strip()}]")
         if prox_ctx:
             parts.append(prox_ctx.strip())
+        parts.append(self._atmosphere_context())
+        seen_lately = self.recent_sightings_text(max_age_s=1800.0, n=3)
+        if seen_lately:
+            parts.append(f"[What you saw recently (oldest first): {seen_lately}]")
         try:
             parts.append(self.world.summary())
         except Exception:
             pass
         if self._recent_thoughts:
             parts.append(
-                "[Your recent thoughts (do NOT repeat or paraphrase these):\n"
+                "[Your recent thoughts (do NOT repeat or paraphrase these, and do not reuse their topic or wording):\n"
                 + "\n".join(f"  - {t}" for t in self._recent_thoughts) + "]"
             )
 
-        gap_min = self._minutes_since_last()
-        gap_phrase = f"~{gap_min} minutes have passed" if gap_min > 0 else "some quiet time has passed"
         situation = (
             "You are roaming around the desk on your own right now — your wheels are driven "
             "automatically, so leave tools empty."
-            if roaming else f"{gap_phrase} since your last thought."
+            if roaming else "You are resting quietly on your desk."
         )
 
         parts.append(
             "[INTERNAL SIGNAL — AUTONOMOUS MODE]\n"
             f"No one is speaking to you right now. {situation}\n"
-            f"Mode hint: {mode_hint[1]}\n"
-            "Generate ONE brief spontaneous action in the standard JSON format."
+            f"Focus: {mode_hint[1]}\n"
+            "Ground your thought ONLY in the context above. Generate ONE brief spontaneous action "
+            "in the standard JSON format."
         )
         return "\n".join(parts)
 
@@ -374,6 +477,7 @@ class AutonomousBrain:
                 ],
                 format="json",
                 keep_alive=self.keep_alive,
+                options=dict(THOUGHT_LLM_OPTIONS),
             )
             raw = response["message"]["content"].strip()
             return parse_llm_json(raw)
@@ -381,13 +485,42 @@ class AutonomousBrain:
             print(f"[Autonomous] LLM query failed: {e}")
             return [], ""
 
+    @staticmethod
+    def _plain(text):
+        return re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]", " ", text or "")).strip().lower()
+
+    def _too_similar(self, text):
+        """True if `text` repeats (or closely paraphrases) one of the recent thoughts."""
+        new = self._plain(text)
+        if not new:
+            return False
+        new_words = {w for w in re.findall(r"[a-z']+", new) if len(w) > 3}
+        for old in self._recent_thoughts:
+            old = self._plain(old)
+            if difflib.SequenceMatcher(None, new, old).ratio() >= THOUGHT_SIMILARITY_LIMIT:
+                return True
+            old_words = {w for w in re.findall(r"[a-z']+", old) if len(w) > 3}
+            if new_words and old_words:
+                if len(new_words & old_words) / len(new_words | old_words) >= THOUGHT_SIMILARITY_LIMIT:
+                    return True
+        return False
+
     def _compose(self, mode_hint, vision_ctx=None, roaming=False, max_age=THOUGHT_MAX_AGE_S):
-        """Builds context, asks the LLM, returns a thought dict (or None). Safe to run on the worker."""
+        """Builds live context, asks the LLM, returns a thought dict (or None). Safe to run on the worker."""
+        scene = vision_ctx or self._recent_scene()
         trigger = self._build_trigger(
-            vision_ctx, self._gather_proximity_context(), self._gather_memory_context(),
+            scene, self._gather_proximity_context(), self._gather_memory_context(scene),
             mode_hint, roaming=roaming,
         )
         tools, response_text = self._query_llm(trigger)
+        if response_text and self._too_similar(response_text):
+            print("[Autonomous] Thought repeats a recent one — asking for something different.")
+            tools, response_text = self._query_llm(
+                trigger + "\n[Your last attempt repeated an earlier thought. Pick a DIFFERENT detail "
+                          "from the context and say something new.]")
+            if response_text and self._too_similar(response_text):
+                print("[Autonomous] Still repetitive — staying quiet this time.")
+                return None
         if not response_text:
             print("[Autonomous] LLM returned nothing usable — skipping.")
             return None
@@ -416,6 +549,7 @@ class AutonomousBrain:
 
         if result:
             scene = result.get("scene")
+            self._remember_scene(scene)
             objects = result.get("objects") or []
             print(f"[Autonomous] Saw: {scene} | objects: {objects}")
             diff = self.world.observe_objects(objects, scene)
@@ -429,7 +563,7 @@ class AutonomousBrain:
                 hint = ("familiar", f"You recognise the {diff['familiar'][0]} from before. "
                                     "Greet it like an old friend or share a thought about it.")
             else:
-                hint = ("comment_on_sight", "Comment on something you see, or ask a curious question about it.")
+                hint = ("sight", FOCUS_HINTS["sight"])
         return self._compose(hint, vision_ctx=scene, roaming=True, max_age=OBSERVATION_MAX_AGE_S)
 
     # ------------------------------------------------------------------ #

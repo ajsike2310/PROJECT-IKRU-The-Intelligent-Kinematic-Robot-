@@ -226,3 +226,20 @@ tests/vision/output/
 *.pt
 *.db
 
+
+# Local Whisper STT weights
+data/models/
+
+# Reports and papers
+reportsandpaper/
+
+# Speech recognition trials and standalone experiments
+trial/
+
+# Temporary tests
+tests/test_autonomous_grounding.py
+tests/test_visual_memory.py
+
+# Unneeded assets
+image.png
+
