@@ -259,24 +259,31 @@ def keyboard_drive(ws):
     # Hold a key to drive. Windows waits ~0.5s before repeating a held key,
     # so we stop 0.6s after the last key event.
     release_s = 0.6
-    print("\n[Keyboard drive] Hold W/A/S/D to move, SPACE = stop, Q = quit.")
-    current, last_key = "STOP", 0.0
+    print("\n[Keyboard drive] Hold W/A/S/D to move, U/J = fork up/down (0-45 deg, GPIO 15), "
+          "SPACE = stop, Q = quit.")
+    current, last_key, fork = "STOP", 0.0, 0
+    ws.send("FORK:0")
     try:
         while True:
             if msvcrt.kbhit():
                 k = msvcrt.getwch().lower()
                 if k == "q":
                     break
+                if k in ("u", "j"):
+                    fork = max(0, min(45, fork + (2 if k == "u" else -2)))
+                    ws.send(f"FORK:{fork}")
+                    print(f"\r  {current:<10} fork {fork:>2} deg ", end="", flush=True)
+                    continue
                 cmd = keymap.get(k, "STOP")
                 last_key = time.time()
                 if cmd != current:
                     ws.send(cmd)
                     current = cmd
-                    print(f"\r  {cmd:<10}", end="", flush=True)
+                    print(f"\r  {cmd:<10} fork {fork:>2} deg ", end="", flush=True)
             elif current != "STOP" and time.time() - last_key > release_s:
                 ws.send("STOP")
                 current = "STOP"
-                print(f"\r  {'STOP':<10}", end="", flush=True)
+                print(f"\r  {'STOP':<10} fork {fork:>2} deg ", end="", flush=True)
             for ev in _poll_events(ws, 0.02):
                 if ev.get("event") == "obstacle_blocked":
                     print(f"\n  [!] Safety brake: obstacle at {ev.get('distance_cm')} cm")

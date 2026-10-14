@@ -129,9 +129,24 @@ bool isMovingForward = false;
 unsigned long lastSonarTime = 0;
 const unsigned long SONAR_INTERVAL_MS = 60;
 
+// ============================================================
+// FORKLIFT SERVO (hobby servo, 50 Hz PWM, signal on GPIO 15)
+// 0 deg = lowest, 45 deg = highest. Angle is clamped in forkWrite().
+// ============================================================
+
+#define FORK_PIN 15
+#define FORK_MIN_DEG 0
+#define FORK_MAX_DEG 45
+const uint32_t FORK_PWM_FREQ = 50;
+const uint8_t  FORK_PWM_BITS = 14;
+const int FORK_PULSE_MIN_US = 500;    // pulse at 0 deg (tune if the servo buzzes at the end stop)
+const int FORK_PULSE_MAX_US = 2400;   // pulse at 180 deg; we only use the first half
+int forkAngle = FORK_MIN_DEG;
+
 void stopMotors();
 void driveMotors(int leftPct, int rightPct);
 void checkMotorFault();
+void forkWrite(int deg);
 void updateUltrasonic();
 
 // ============================================================
@@ -1802,6 +1817,10 @@ void setup() {
   digitalWrite(MOTOR_EEP, HIGH);
   digitalWrite(MOTOR_EEP_ALT, HIGH);
 
+  // Forklift servo: start fully lowered
+  ledcAttach(FORK_PIN, FORK_PWM_FREQ, FORK_PWM_BITS);
+  forkWrite(FORK_MIN_DEG);
+
   // Ultrasonic sensor pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -2334,6 +2353,9 @@ void parseCommand(String input) {
     moveRight();
   } else if (input == "STOP") {
     stopMotors();
+  } else if (input.startsWith("FORK:")) {
+    // FORK:<0-45> moves the forklift to that angle (clamped)
+    forkWrite(input.substring(5).toInt());
   } else if (input.startsWith("SPEED:")) {
     // Drive speed for subsequent moves; slower roaming keeps IKRU on the table
     motorSpeedPct = constrain(input.substring(6).toInt(), 30, 100);
@@ -2430,6 +2452,13 @@ void setMotor(uint8_t inA, uint8_t inB, int pct) {
 void driveMotors(int leftPct, int rightPct) {
   setMotor(MOTOR_IN1, MOTOR_IN2, leftPct);
   setMotor(MOTOR_IN3, MOTOR_IN4, rightPct);
+}
+
+void forkWrite(int deg) {
+  forkAngle = constrain(deg, FORK_MIN_DEG, FORK_MAX_DEG);
+  uint32_t us = map(forkAngle, 0, 180, FORK_PULSE_MIN_US, FORK_PULSE_MAX_US);
+  ledcWrite(FORK_PIN, (uint32_t)((uint64_t)us * ((1UL << FORK_PWM_BITS) - 1) / 20000));
+  Serial.printf("Fork angle: %d\n", forkAngle);
 }
 
 // ULT/nFAULT goes LOW on over-current, over-temperature or VM under-voltage.
