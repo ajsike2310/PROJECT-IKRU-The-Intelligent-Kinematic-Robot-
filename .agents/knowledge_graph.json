@@ -97,7 +97,7 @@
     "firmware": {
       "controller": {
         "path": "firmware/controller/controller.ino",
-        "purpose": "ESP32 Body & OLED firmware managing WebSocket server (port 81), MAX98357A I2S natural voice streaming on Core 0 with dynamic digital volume scaling (VOLUME:<0-100>), DRV8833 dual motors (remapped to GPIO 18/19), full-screen eye animations, non-volatile Wi-Fi storage via Preferences (NVS), dynamic Wi-Fi switching routine (applyNewWiFi), non-blocking SoftAP fallback ('IKRU-SETUP' / 192.168.4.1) when connection fails, and SET_WIFI:<ssid>:<pass> command handling over both WebSocket and USB Serial.",
+        "purpose": "ESP32 Body & OLED firmware managing WebSocket server (port 81), MAX98357A I2S natural voice streaming on Core 0 with dynamic digital volume scaling (VOLUME:<0-100>), DRV8833 dual motors (remapped to GPIO 18/19), forklift servo control on GPIO 15 (0-45 deg via FORK:<0-45>), full-screen eye animations, non-volatile Wi-Fi storage via Preferences (NVS), dynamic Wi-Fi switching routine (applyNewWiFi), non-blocking SoftAP fallback ('IKRU-SETUP' / 192.168.4.1) when connection fails, and SET_WIFI:<ssid>:<pass> command handling over both WebSocket and USB Serial.",
         "target_board": "ESP32 Dev Module (esp32:esp32:esp32)",
         "upload_port": "COM7",
         "toolchain": "arduino-cli",
@@ -133,6 +133,7 @@
         "test_mic_stt.py": "Microphone enumeration, PyAudio hardware test, and Google Web Speech API speech-to-text trial."
       },
       "robot": {
+        "test_motors.py": "Motor driving test suite and interactive keyboard teleoperation with WASD navigation, forklift height adjustments (U/J keys, 0-45 deg), and safety brake obstacle alerts.",
         "test_robot.py": "WebSocket command tester script.",
         "test_socket.py": "TCP port 81 reachability tester script."
       }
