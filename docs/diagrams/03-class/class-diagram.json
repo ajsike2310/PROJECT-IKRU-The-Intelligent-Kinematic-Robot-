@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "IKRU Class Diagram",
+    "output": "class-diagram.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1240,
+      620
+    ],
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Class"
+        },
+        "database": {
+          "label": "Persistence class"
+        },
+        "external": {
+          "label": "Hardware client class"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "conversation",
+        "label": "Conversation + memory",
+        "focus": [
+          "chat",
+          "memmgr",
+          "sqlite",
+          "qdrant"
+        ],
+        "note": "ChatEngine uses the MemoryManager facade, which composes SQLiteStore and QdrantMemory."
+      },
+      {
+        "id": "autonomy",
+        "label": "Autonomy",
+        "focus": [
+          "brain",
+          "world",
+          "loco",
+          "searcher",
+          "chat"
+        ],
+        "note": "AutonomousBrain owns the WorldModel, Locomotion and ObjectSearcher and notes its words into ChatEngine."
+      },
+      {
+        "id": "perception-action",
+        "label": "Perception + action",
+        "focus": [
+          "searcher",
+          "vlm",
+          "vision",
+          "loco",
+          "robot"
+        ],
+        "note": "Search reads camera frames and asks the VLM; every move goes through RobotController."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLiteStore",
+      "sublabel": "save_message() \u00b7 save_fact()",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "memmgr",
+      "type": "backend",
+      "label": "MemoryManager",
+      "sublabel": "build_memory_context()",
+      "pos": [
+        310,
+        40
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "qdrant",
+      "type": "database",
+      "label": "QdrantMemory",
+      "sublabel": "add_memory() \u00b7 search_memories()",
+      "pos": [
+        580,
+        40
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "chat",
+      "type": "backend",
+      "label": "ChatEngine",
+      "sublabel": "ask() \u00b7 note_autonomous_utterance()",
+      "pos": [
+        300,
+        190
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "brain",
+      "type": "backend",
+      "label": "AutonomousBrain",
+      "sublabel": "start() \u00b7 pause() \u00b7 start_search()",
+      "pos": [
+        760,
+        190
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "world",
+      "type": "database",
+      "label": "WorldModel",
+      "sublabel": "observe_range() \u00b7 choose_turn()",
+      "pos": [
+        1010,
+        190
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "vlm",
+      "type": "backend",
+      "label": "VLMClient",
+      "sublabel": "describe_scene() \u00b7 classify_target()",
+      "pos": [
+        470,
+        340
+      ],
+      "size": [
+        210,
+        64
+      ]
+    },
+    {
+      "id": "searcher",
+      "type": "backend",
+      "label": "ObjectSearcher",
+      "sublabel": "run(task) \u00b7 inspect()",
+      "pos": [
+        770,
+        340
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "loco",
+      "type": "backend",
+      "label": "Locomotion",
+      "sublabel": "turn() \u00b7 drive_burst() \u00b7 go_home()",
+      "pos": [
+        1010,
+        340
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "vision",
+      "type": "backend",
+      "label": "VisionReceiver",
+      "sublabel": "buffer: FrameBuffer",
+      "pos": [
+        770,
+        490
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "robot",
+      "type": "external",
+      "label": "RobotController",
+      "sublabel": "send() \u00b7 forward() \u00b7 speak_segments()",
+      "pos": [
+        1000,
+        490
+      ],
+      "size": [
+        220,
+        64
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "mem-sqlite",
+      "from": "memmgr",
+      "to": "sqlite",
+      "label": "composes 1"
+    },
+    {
+      "id": "mem-qdrant",
+      "from": "memmgr",
+      "to": "qdrant",
+      "label": "composes 1"
+    },
+    {
+      "id": "chat-mem",
+      "from": "chat",
+      "to": "memmgr",
+      "label": "uses 0..1"
+    },
+    {
+      "id": "brain-chat",
+      "from": "brain",
+      "to": "chat",
+      "label": "notes into",
+      "variant": "dashed"
+    },
+    {
+      "id": "brain-world",
+      "from": "brain",
+      "to": "world",
+      "label": "owns"
+    },
+    {
+      "id": "brain-search",
+      "from": "brain",
+      "to": "searcher",
+      "label": "owns",
+      "labelAt": [
+        865,
+        297
+      ]
+    },
+    {
+      "id": "search-loco",
+      "from": "searcher",
+      "to": "loco",
+      "label": "moves via"
+    },
+    {
+      "id": "search-vlm",
+      "from": "searcher",
+      "to": "vlm",
+      "label": "classifies"
+    },
+    {
+      "id": "search-vision",
+      "from": "searcher",
+      "to": "vision",
+      "label": "reads frame",
+      "labelAt": [
+        865,
+        447
+      ]
+    },
+    {
+      "id": "loco-world",
+      "from": "loco",
+      "to": "world",
+      "label": "updates pose"
+    },
+    {
+      "id": "loco-robot",
+      "from": "loco",
+      "to": "robot",
+      "label": "commands",
+      "labelAt": [
+        1110,
+        447
+      ]
+    }
+  ]
+}

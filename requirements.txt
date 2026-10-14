@@ -1,4 +1,4 @@
-﻿aiofiles
+aiofiles
 aiohappyeyeballs
 aiohttp
 aiosignal
@@ -9,6 +9,7 @@ anyio
 attrs
 audioop-lts; python_version >= "3.13"
 audioread
+av
 brotli
 catalogue
 certifi
@@ -20,6 +21,7 @@ click
 cloudpickle
 colorama
 conformer
+ctranslate2
 decorator
 Deprecated
 diffusers
@@ -29,6 +31,7 @@ edge-tts
 einops
 espeakng-loader
 fastapi
+faster-whisper
 ffmpy
 filelock
 flatbuffers
@@ -49,6 +52,7 @@ jaconv
 Jinja2
 joblib
 kokoro-onnx
+laya
 lazy-loader
 librosa
 llvmlite
@@ -63,12 +67,12 @@ narwhals
 networkx
 nodeenv
 numba
-numpy<2.0.0,>=1.24.0
+numpy
 ollama
 omegaconf
 onnx
 onnxruntime
-opencv-python
+opencv-python>=4.8,<5  # 5.x removed cv2.dnn.readNetFromCaffe (used by tests/vision)
 orjson
 packaging
 pandas
@@ -105,6 +109,7 @@ scipy
 semantic-version
 setuptools
 shellingham
+silero-vad
 six
 soundfile
 soxr

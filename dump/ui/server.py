@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 # Add project root and software dir to sys.path
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOFTWARE_DIR = PROJECT_ROOT / "software"
 if str(SOFTWARE_DIR) not in sys.path:
     sys.path.insert(0, str(SOFTWARE_DIR))
@@ -54,8 +54,17 @@ assistant_process = None
 assistant_logs = []
 assistant_lock = threading.Lock()
 
-DEFAULT_ROBOT_IP = "192.168.1.42"
-DEFAULT_CAM_IP = "192.168.4.1"
+CONFIG_FILE = PROJECT_ROOT / "config.json"
+config_data = {}
+if CONFIG_FILE.exists():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+    except Exception:
+        pass
+
+DEFAULT_ROBOT_IP = config_data.get("robot_ip", "172.24.239.144")
+DEFAULT_CAM_IP = config_data.get("cam_ip", "192.168.4.1")
 
 VISUAL_KEYWORDS = [
     "see", "look", "color", "colour", "wear", "wearing",
@@ -597,18 +606,10 @@ class IkruApiHandler(http.server.SimpleHTTPRequestHandler):
                 if stream_robot and audio_url:
                     ctrl.play_audio(audio_url)
 
-                # 5. Animate OLED facial expressions on ESP32 in sync with speech duration
+                # 5. Animate OLED facial expressions and R2-D2 droid vocalizations on ESP32
                 def _emotion_worker():
                     try:
-                        total_len = max(1, sum(len(txt.strip()) for _, txt in segments if txt))
-                        effective_duration = max(duration, len(full_text) * 0.08)
-                        for emotion, text in segments:
-                            seg_len = len(text.strip()) if text else 1
-                            seg_time = max(1.0, (seg_len / total_len) * effective_duration)
-                            ctrl.set_emotion(emotion)
-                            time.sleep(seg_time)
-                        time.sleep(0.3)
-                        ctrl.normal()
+                        ctrl.speak_segments(segments)
                     except Exception as emo_err:
                         print(f"[Chat] Emotion animation worker error: {emo_err}")
 

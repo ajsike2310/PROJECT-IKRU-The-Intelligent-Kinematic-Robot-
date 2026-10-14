@@ -193,6 +193,14 @@ class VisionReceiver:
                             cv2.IMREAD_COLOR
                         )
                         if decoded is not None:
+                            # --- Draw 5x5 Grid onto the raw frame so VLM can see it ---
+                            dh, dw = decoded.shape[:2]
+                            dgrid_color = (255, 255, 255)  # White lines
+                            for i in range(1, 5):
+                                cv2.line(decoded, (i * dw // 5, 0), (i * dw // 5, dh), dgrid_color, 1)
+                                cv2.line(decoded, (0, i * dh // 5), (dw, i * dh // 5), dgrid_color, 1)
+                            # ------------------------------------------------------------
+                            
                             self.buffer.set_frame(decoded)
                             self.connected = True
                             self._update_fps(len(frame_bytes))

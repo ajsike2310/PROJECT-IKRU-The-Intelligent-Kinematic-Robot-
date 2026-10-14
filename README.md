@@ -120,12 +120,13 @@
 ```
 ESP32 Pin     →    DRV8833 Module Pin   →    Function
 ──────────────────────────────────────────────────────────────────
-D13  (GPIO13) →    EEP / nSLEEP (M1)   →    Enable Left  Motor (M1)
-D33  (GPIO33) →    EEP / nSLEEP (M2)   →    Enable Right Motor (M2)
-D26  (GPIO26) →    IN1                 →    Left  Motor Direction A
-D27  (GPIO27) →    IN2                 →    Left  Motor Direction B
-D14  (GPIO14) →    IN3                 →    Right Motor Direction A
-D12  (GPIO12) →    IN4                 →    Right Motor Direction B
+D13  (GPIO13) →    EEP (nSLEEP)        →    Driver awake (HIGH) / sleep (LOW), both motors
+D26  (GPIO26) →    IN1                 →    Left  Motor (OUT1/OUT2), PWM
+D27  (GPIO27) →    IN2                 →    Left  Motor (OUT1/OUT2), PWM
+D14  (GPIO14) →    IN3                 →    Right Motor (OUT3/OUT4), PWM
+D12  (GPIO12) →    IN4                 →    Right Motor (OUT3/OUT4), PWM
+D32  (GPIO32) →    ULT (nFAULT)        →    Optional fault input (LOW = fault)
+D33  (GPIO33) →    (optional) EEP      →    Also driven HIGH, for older wiring
 D21  (GPIO21) →    SDA                 →    SSD1306 OLED I2C Data
 D22  (GPIO22) →    SCL                 →    SSD1306 OLED I2C Clock
 ```
@@ -445,11 +446,31 @@ IKRU uses a simple text-based protocol over WebSocket:
 
 ## 🔍 Troubleshooting
 
+### 🌐 Network setup (IKRU-CAM hub)
+
+The head unit (ESP32-CAM) creates the **IKRU-CAM** Wi-Fi network (password `ikru@potato`). Everything joins it:
+
+| Device | Address |
+|---|---|
+| Head / camera (access point) | `192.168.4.1` |
+| Robot body (fixed IP) | `192.168.4.200` |
+| PC | DHCP (`192.168.4.2`–`.11`) |
+
+Power on the head **first**, then the robot. At boot the robot connects to IKRU-CAM (or any Wi-Fi saved in its flash). While connected, it broadcasts a discovery beacon on UDP `4210` every 2 s. `python run.py` uses that beacon plus quick parallel probes to find the robot in about 3 s.
+
+Guest and campus networks (e.g. `MBCET-GUEST`) usually block devices from talking to each other, so the robot can't be reached through them. Use IKRU-CAM instead.
+
+Wi-Fi credentials live in the git-ignored `config.local.json`. To give the robot a fallback network, run `python run.py --provision-wifi`, or use `[u]sb serial` in the connection menu.
+
 ### ❌ Cannot connect to robot
 
-- Verify the IP address in `chat.py` matches the ESP32's Serial Monitor output
-- Ensure both devices are on the **same Wi-Fi network**
-- Check that the ESP32 firmware is flashed and running (LED should be on)
+When the robot can't be found, `run.py` explains why and offers a menu: `[r]etry`, `[m]anual IP`, `[u]sb serial`, `[c]ontinue offline`.
+
+- **"not the robot's network" / "isn't visible":** join Wi-Fi `IKRU-CAM` on the PC, and make sure the head unit is powered.
+- **"Guest and campus networks usually block…":** client isolation. Switch to IKRU-CAM.
+- **"isn't answering at 192.168.4.200":** make sure the head unit is powered on and reset the robot body controller. Over USB, send `GET_IP` in the Serial Monitor (115200 baud) to print its IP.
+- **"announcing itself … port 81 isn't accepting":** allow Python through Windows Firewall.
+- If the robot drops out while running, IKRU reconnects in the background (5 → 30 s backoff).
 
 ### ❌ `ConnectionRefusedError` on WebSocket
 
@@ -464,7 +485,7 @@ IKRU uses a simple text-based protocol over WebSocket:
 
 ### ❌ Motors not moving but ESP32 receives command
  
-- Check EEP / nSLEEP pins — ensure GPIO13 / GPIO33 are pulled HIGH or driven HIGH by firmware
+- Check the EEP / nSLEEP pin — ensure GPIO13 is wired to EEP (firmware drives it HIGH)
 - Verify DRV8833 VM power supply (requires 2.7V–10.8V with sufficient motor current)
 - Ensure common ground (GND) is connected between the ESP32 and DRV8833 power supply
 - Double check wiring against the pin table above

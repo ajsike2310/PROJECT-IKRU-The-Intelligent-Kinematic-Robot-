@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "IKRU Sequence Diagram: Voice to Motion",
+    "output": "sequence-diagram.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      680
+    ],
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "hear",
+        "label": "Hear",
+        "focus": [
+          "user",
+          "loop"
+        ],
+        "note": "Silero VAD cuts the utterance and Google STT turns it into text that lands in chat_loop's queue."
+      },
+      {
+        "id": "think",
+        "label": "Think",
+        "focus": [
+          "loop",
+          "laya",
+          "chat",
+          "memory",
+          "ollama"
+        ],
+        "note": "Laya picks the action in parallel while ChatEngine adds memory and asks Ollama for JSON."
+      },
+      {
+        "id": "respond",
+        "label": "Speak then move",
+        "focus": [
+          "loop",
+          "robot",
+          "body"
+        ],
+        "note": "IKRU speaks first (face, chirps, scrolling text), then drives; the firmware brake guards forward motion."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "speaks"
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "chat_loop",
+      "sublabel": "main.py"
+    },
+    {
+      "id": "laya",
+      "type": "backend",
+      "label": "Laya",
+      "sublabel": "LayaToolRouter"
+    },
+    {
+      "id": "chat",
+      "type": "backend",
+      "label": "ChatEngine",
+      "sublabel": "prompt + parse"
+    },
+    {
+      "id": "memory",
+      "type": "database",
+      "label": "Memory",
+      "sublabel": "MemoryManager"
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama",
+      "sublabel": "qwen2.5 JSON"
+    },
+    {
+      "id": "robot",
+      "type": "backend",
+      "label": "Robot",
+      "sublabel": "RobotController"
+    },
+    {
+      "id": "body",
+      "type": "external",
+      "label": "ESP32 Body",
+      "sublabel": "ws :81"
+    }
+  ],
+  "segments": [
+    {
+      "from": 152,
+      "to": 190,
+      "label": "Hear"
+    },
+    {
+      "from": 198,
+      "to": 452,
+      "label": "Think"
+    },
+    {
+      "from": 454,
+      "to": 564,
+      "label": "Respond"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "user",
+      "to": "loop",
+      "y": 172,
+      "label": "speech → text (VAD + STT)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m2",
+      "from": "loop",
+      "to": "laya",
+      "y": 214,
+      "label": "decide(text)",
+      "variant": "dashed"
+    },
+    {
+      "id": "m3",
+      "from": "loop",
+      "to": "chat",
+      "y": 242,
+      "label": "ask(text, sonar ctx)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m4",
+      "from": "chat",
+      "to": "memory",
+      "y": 270,
+      "label": "build_memory_context()",
+      "variant": "default"
+    },
+    {
+      "id": "m5",
+      "from": "memory",
+      "to": "chat",
+      "y": 298,
+      "label": "facts + recalls",
+      "variant": "return"
+    },
+    {
+      "id": "m6",
+      "from": "chat",
+      "to": "ollama",
+      "y": 326,
+      "label": "chat(format=json)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m7",
+      "from": "ollama",
+      "to": "chat",
+      "y": 354,
+      "label": "{tools, response}",
+      "variant": "return"
+    },
+    {
+      "id": "m8",
+      "from": "chat",
+      "to": "memory",
+      "y": 382,
+      "label": "record messages",
+      "variant": "dashed"
+    },
+    {
+      "id": "m9",
+      "from": "laya",
+      "to": "loop",
+      "y": 410,
+      "label": "forward, 2 s",
+      "variant": "return"
+    },
+    {
+      "id": "m10",
+      "from": "chat",
+      "to": "loop",
+      "y": 438,
+      "label": "tools + segments",
+      "variant": "return"
+    },
+    {
+      "id": "m11",
+      "from": "loop",
+      "to": "robot",
+      "y": 466,
+      "label": "speak_segments()",
+      "variant": "default"
+    },
+    {
+      "id": "m12",
+      "from": "robot",
+      "to": "body",
+      "y": 494,
+      "label": "GIGGLE, DISPLAY:text",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m13",
+      "from": "loop",
+      "to": "robot",
+      "y": 522,
+      "label": "forward(2.0)",
+      "variant": "default"
+    },
+    {
+      "id": "m14",
+      "from": "robot",
+      "to": "body",
+      "y": 550,
+      "label": "FORWARD ... STOP",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "loop",
+      "from": 172,
+      "to": 556,
+      "type": "backend"
+    },
+    {
+      "participant": "laya",
+      "from": 209,
+      "to": 416,
+      "type": "backend"
+    },
+    {
+      "participant": "chat",
+      "from": 237,
+      "to": 444,
+      "type": "backend"
+    },
+    {
+      "participant": "memory",
+      "from": 265,
+      "to": 304,
+      "type": "database"
+    },
+    {
+      "participant": "ollama",
+      "from": 321,
+      "to": 360,
+      "type": "external"
+    },
+    {
+      "participant": "robot",
+      "from": 461,
+      "to": 556,
+      "type": "backend"
+    }
+  ]
+}

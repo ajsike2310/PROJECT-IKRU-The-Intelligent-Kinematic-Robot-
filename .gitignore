@@ -213,3 +213,33 @@ src/models/
 
 # Python cache
 src/__pycache__/
+
+# Local secrets (Wi-Fi credentials) — merged over config.json at runtime
+config.local.json
+
+# Reference Codebase
+referencereachycode/
+
+# MobileNet-SSD weights for tests/vision (download separately, ~23 MB)
+tests/vision/models/*.caffemodel
+tests/vision/output/
+*.pt
+*.db
+
+
+# Local Whisper STT weights
+data/models/
+
+# Reports and papers
+reportsandpaper/
+
+# Speech recognition trials and standalone experiments
+trial/
+
+# Temporary tests
+tests/test_autonomous_grounding.py
+tests/test_visual_memory.py
+
+# Unneeded assets
+image.png
+

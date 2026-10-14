@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "IKRU Data Flow Diagram: Level 2 (2.0 Converse)",
+    "output": "dfd-level-2.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      540
+    ],
+    "legend": {
+      "entries": {
+        "database": {
+          "label": "Data store"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "llm-path",
+        "label": "LLM path",
+        "focus": [
+          "p21",
+          "p23",
+          "p24",
+          "d1",
+          "ollama",
+          "p25",
+          "p26",
+          "out"
+        ],
+        "note": "Screened text gains context and memory, goes to Ollama, and comes back as reply segments and tools."
+      },
+      {
+        "id": "laya-path",
+        "label": "Laya path",
+        "focus": [
+          "p21",
+          "p22",
+          "p26",
+          "out"
+        ],
+        "note": "In parallel, Laya picks the physical action; its decision wins when confident."
+      },
+      {
+        "id": "context-sources",
+        "label": "Context sources",
+        "focus": [
+          "scene",
+          "sonar",
+          "text",
+          "p23"
+        ],
+        "note": "Camera text (visual questions only) and the latest sonar reading join the user's words."
+      }
+    ]
+  },
+  "stages": [
+    {
+      "label": "Inputs"
+    },
+    {
+      "label": "Screen + context"
+    },
+    {
+      "label": "Intent + prompt"
+    },
+    {
+      "label": "Interpret"
+    },
+    {
+      "label": "Output"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "text",
+      "type": "external",
+      "label": "1.0 Capture speech",
+      "sublabel": "from Level 1",
+      "stage": 0,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "scene",
+      "type": "external",
+      "label": "3.0 Perceive scene",
+      "sublabel": "from Level 1",
+      "stage": 0,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "sonar",
+      "type": "external",
+      "label": "ProximityMonitor",
+      "sublabel": "cached distance",
+      "stage": 0,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "p21",
+      "type": "backend",
+      "label": "2.1 Screen input",
+      "sublabel": "exit phrase, busy",
+      "stage": 1,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p23",
+      "type": "backend",
+      "label": "2.3 Gather context",
+      "sublabel": "vision + sonar tags",
+      "stage": 1,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "p22",
+      "type": "backend",
+      "label": "2.2 Route intent",
+      "sublabel": "Laya decide()",
+      "stage": 2,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p24",
+      "type": "backend",
+      "label": "2.4 Query LLM",
+      "sublabel": "ChatEngine.ask()",
+      "stage": 2,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "d1",
+      "type": "database",
+      "label": "D1 Memory",
+      "sublabel": "SQLite + Qdrant",
+      "stage": 2,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "p26",
+      "type": "backend",
+      "label": "2.6 Merge tools",
+      "sublabel": "merge_tool_calls()",
+      "stage": 3,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p25",
+      "type": "backend",
+      "label": "2.5 Parse reply",
+      "sublabel": "JSON + segments",
+      "stage": 3,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama",
+      "sublabel": "chat LLM",
+      "stage": 3,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "out",
+      "type": "external",
+      "label": "4.0 Actuate",
+      "sublabel": "to Level 1",
+      "stage": 4,
+      "row": 0,
+      "width": 130
+    }
+  ],
+  "flows": [
+    {
+      "from": "text",
+      "to": "p21",
+      "label": "utterance",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "scene",
+      "to": "p23",
+      "label": "scene text",
+      "route": "straight"
+    },
+    {
+      "from": "sonar",
+      "to": "p23",
+      "label": "distance"
+    },
+    {
+      "from": "p21",
+      "to": "p23",
+      "label": "user text",
+      "labelAt": [
+        315,
+        212
+      ]
+    },
+    {
+      "from": "p21",
+      "to": "p22",
+      "label": "user text",
+      "variant": "dashed",
+      "route": "straight"
+    },
+    {
+      "from": "p23",
+      "to": "p24",
+      "label": "context tags",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "d1",
+      "to": "p24",
+      "label": "recalls + facts"
+    },
+    {
+      "from": "p24",
+      "to": "ollama",
+      "label": "messages"
+    },
+    {
+      "from": "ollama",
+      "to": "p25",
+      "label": "raw JSON"
+    },
+    {
+      "from": "p22",
+      "to": "p26",
+      "label": "ToolDecision",
+      "variant": "dashed",
+      "route": "straight"
+    },
+    {
+      "from": "p25",
+      "to": "p26",
+      "label": "LLM tools"
+    },
+    {
+      "from": "p26",
+      "to": "out",
+      "label": "final tools",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "p25",
+      "to": "out",
+      "label": "segments",
+      "variant": "emphasis"
+    }
+  ]
+}

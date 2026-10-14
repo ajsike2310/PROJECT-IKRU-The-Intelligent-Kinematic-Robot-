@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "IKRU Data Flow Diagram: Level 1",
+    "output": "dfd-level-1.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      540
+    ],
+    "legend": {
+      "entries": {
+        "database": {
+          "label": "Data store"
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "conversation",
+        "label": "Conversation",
+        "focus": [
+          "user",
+          "p1",
+          "p2",
+          "ollama",
+          "d1",
+          "p4",
+          "body"
+        ],
+        "note": "Voice becomes text, text becomes a reply plus tools, tools become robot commands."
+      },
+      {
+        "id": "perception",
+        "label": "Perception",
+        "focus": [
+          "head",
+          "p3",
+          "p2",
+          "p5"
+        ],
+        "note": "Camera frames become scene descriptions for answers and object verdicts for autonomy."
+      },
+      {
+        "id": "autonomy",
+        "label": "Autonomy",
+        "focus": [
+          "p5",
+          "d2",
+          "p4",
+          "body"
+        ],
+        "note": "The autonomous brain keeps a world model and drives the body when nobody is talking."
+      }
+    ]
+  },
+  "stages": [
+    {
+      "label": "External sources"
+    },
+    {
+      "label": "Input processes"
+    },
+    {
+      "label": "Decision processes"
+    },
+    {
+      "label": "Actuation + stores"
+    },
+    {
+      "label": "External sink"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Desk User",
+      "sublabel": "external entity",
+      "stage": 0,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "head",
+      "type": "external",
+      "label": "ESP32-CAM Head",
+      "sublabel": "external entity",
+      "stage": 0,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "p1",
+      "type": "backend",
+      "label": "1.0 Capture speech",
+      "sublabel": "VAD + Google STT",
+      "stage": 1,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p3",
+      "type": "backend",
+      "label": "3.0 Perceive scene",
+      "sublabel": "UDP frames + VLM",
+      "stage": 1,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "p2",
+      "type": "backend",
+      "label": "2.0 Converse",
+      "sublabel": "prompt, LLM, tools",
+      "stage": 2,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "ollama",
+      "type": "external",
+      "label": "Ollama",
+      "sublabel": "LLM + VLM server",
+      "stage": 2,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "p5",
+      "type": "backend",
+      "label": "5.0 Autonomy",
+      "sublabel": "roam, think, search",
+      "stage": 2,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "d1",
+      "type": "database",
+      "label": "D1 Memory",
+      "sublabel": "SQLite + Qdrant",
+      "stage": 3,
+      "row": 0,
+      "width": 130
+    },
+    {
+      "id": "p4",
+      "type": "backend",
+      "label": "4.0 Actuate",
+      "sublabel": "RobotController",
+      "stage": 3,
+      "row": 1,
+      "width": 130
+    },
+    {
+      "id": "d2",
+      "type": "database",
+      "label": "D2 World model",
+      "sublabel": "world_model.json",
+      "stage": 3,
+      "row": 2,
+      "width": 130
+    },
+    {
+      "id": "body",
+      "type": "external",
+      "label": "ESP32 Body",
+      "sublabel": "external entity",
+      "stage": 4,
+      "row": 1,
+      "width": 130
+    }
+  ],
+  "flows": [
+    {
+      "from": "user",
+      "to": "p1",
+      "label": "voice audio",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "p1",
+      "to": "p2",
+      "label": "utterance text",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "from": "head",
+      "to": "p3",
+      "label": "JPEG frames",
+      "route": "straight"
+    },
+    {
+      "from": "p3",
+      "to": "p2",
+      "label": "scene text"
+    },
+    {
+      "from": "p3",
+      "to": "p5",
+      "label": "object verdicts",
+      "route": "straight",
+      "labelDy": 28
+    },
+    {
+      "from": "p2",
+      "to": "ollama",
+      "label": "prompt / reply",
+      "variant": "dashed",
+      "labelAt": [
+        530,
+        200
+      ]
+    },
+    {
+      "from": "p2",
+      "to": "d1",
+      "label": "messages + facts",
+      "route": "straight",
+      "labelAt": [
+        638,
+        124
+      ]
+    },
+    {
+      "from": "p2",
+      "to": "p4",
+      "label": "reply + tools",
+      "variant": "emphasis"
+    },
+    {
+      "from": "p5",
+      "to": "p4",
+      "label": "moves + thoughts"
+    },
+    {
+      "from": "p5",
+      "to": "d2",
+      "label": "pose + landmarks",
+      "route": "straight",
+      "labelAt": [
+        638,
+        428
+      ]
+    },
+    {
+      "from": "p4",
+      "to": "body",
+      "label": "WS commands",
+      "variant": "emphasis"
+    }
+  ]
+}

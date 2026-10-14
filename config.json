@@ -1,5 +1,7 @@
 {
-  "robot_ip": "172.17.20.144",
+  "network_mode": "ikru-cam",
+  "robot_ip": "192.168.4.200",
+  "robot_last_ip": "192.168.4.200",
   "cam_ip": "192.168.4.1",
   "tts_engine": "chatterbox",
   "voice": "guy",
@@ -7,8 +9,49 @@
   "play_pc_audio": false,
   "enable_vision": true,
   "enable_mic": true,
+  "mic": {
+    "vad": "silero",
+    "vad_threshold": 0.5,
+    "silence_ms": 700,
+    "max_utterance_s": 15,
+    "device_index": null,
+    "preroll_ms": 400,
+    "stt_model": "small",
+    "stt_model_dir": "data/models/faster-whisper-small",
+    "stt_compute_type": "float16",
+    "stt_language": null
+  },
+  "ui": {
+    "status_bar": false
+  },
   "llm_model": "qwen2.5:3b",
   "vlm_model": "qwen3-vl:4b",
-  "wifi_ssid": "AJx24",
-  "wifi_pass": "avin1236"
+  "llm_keep_alive": "30m",
+  "memory": {
+    "enabled": true,
+    "sqlite_path": "data/memory/ikru_history.db",
+    "qdrant_path": "data/memory/qdrant",
+    "recall_top_k": 3,
+    "recall_threshold": 0.55
+  },
+  "autonomous": {
+    "enabled": true,
+    "roam_enabled": true,
+    "roam_speed_pct": 55,
+    "forward_cm_per_s": 25.0,
+    "turn_deg_per_s": 180.0,
+    "leash_cm": 35.0,
+    "roam_stop_cm": 25.0,
+    "idle_before_roam_s": 30,
+    "search_timeout_s": 180,
+    "search_min_confidence": 0.6
+  },
+  "tool_router": {
+    "engine": "laya",
+    "mode": "parallel",
+    "laya_model": "convaiinnovations/laya",
+    "device": "cpu",
+    "min_confidence": 0.8,
+    "veto": false
+  }
 }
