@@ -247,3 +247,20 @@ tests/test_visual_memory.py
 # Unneeded assets
 image.png
 
+
+# Runtime memory / databases (large, user-specific)
+data/memory/
+tests/data/memory/
+*.db
+*.sqlite
+
+# Secrets and environments
+.env
+venv/
+config.local.json
+
+# Model weights
+*.pt
+*.onnx
+*.gguf
+*.safetensors
