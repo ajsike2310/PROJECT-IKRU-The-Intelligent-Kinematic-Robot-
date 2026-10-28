@@ -5,6 +5,8 @@
 
 **A low-cost desktop companion robot that hears, sees, remembers and moves — powered by local AI, with no cloud service required.**
 
+[![CI](https://github.com/ajsike2310/PROJECT-IKRU-The-Intelligent-Kinematic-Robot-/actions/workflows/ci.yml/badge.svg)](https://github.com/ajsike2310/PROJECT-IKRU-The-Intelligent-Kinematic-Robot-/actions/workflows/ci.yml)
+
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![ESP32](https://img.shields.io/badge/ESP32-Firmware-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-111111?style=for-the-badge)
@@ -528,7 +530,7 @@ Students of the Department of Computer Science and Engineering, **Mar Baselios C
 
 | | |
 |---|---|
-| **Dr. Priya Mariyam Raju** — *Project Guide, Assistant Professor, Dept. of CSE* | For dedicated mentorship, technical insight and steady encouragement throughout the project. |
+| **Priya Mariam Raju** — *Project Guide, Assistant Professor, Dept. of CSE* | For dedicated mentorship, technical insight and steady encouragement throughout the project. |
 | **Dr. Anne Dickson** — *Head of the Department of CSE* | For constant support, academic encouragement and the facilities that made this work possible. |
 | **Ms. Gayathri K.S.** — *Project Co-ordinator, Dept. of CSE* | For providing the academic environment, resources and coordination. |
 | **Mar Baselios College of Engineering and Technology** | For the platform, laboratory access and institutional support. |
