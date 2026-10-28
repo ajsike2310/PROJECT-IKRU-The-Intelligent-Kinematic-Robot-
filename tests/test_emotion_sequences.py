@@ -37,7 +37,9 @@ def test_sequences():
     for seq in sequences_to_test:
         print(f"\n---> Playing Sequence: [{seq.upper()}] <---")
         robot.play_sequence(seq)
-        time.sleep(1.5)
+        # Avin: Increased delay to allow emotion animation to finish
+        time.sleep(3.0)
+
 
     print("\nDisconnecting from robot...")
     robot.close()

@@ -103,8 +103,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
+# Documentation
+docs/
+
 
 # PyBuilder
 .pybuilder/
@@ -232,6 +233,9 @@ data/models/
 
 # Reports and papers
 reportsandpaper/
+reportsandpaper.zip
+*.zip
+
 
 # Speech recognition trials and standalone experiments
 trial/
