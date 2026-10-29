@@ -1,3 +1,4 @@
+import json
 import time
 import threading
 import websocket
@@ -14,6 +15,12 @@ class RobotController:
     """
 
     RECONNECT_BACKOFF_S = (5, 10, 20, 30)
+
+    # forward(): pause below OBSTACLE_PAUSE_CM, resume at OBSTACLE_RESUME_CM (hysteresis),
+    # and give up on the move if the path stays blocked for OBSTACLE_WAIT_MAX_S
+    OBSTACLE_PAUSE_CM = 12.0
+    OBSTACLE_RESUME_CM = 14.0
+    OBSTACLE_WAIT_MAX_S = 5.0
 
     def __init__(
         self,
@@ -149,20 +156,27 @@ class RobotController:
         while remaining > 0:
             if check_proximity and hasattr(self, "proximity_monitor") and self.proximity_monitor:
                 dist = self.proximity_monitor.get_distance()
-                if 0.0 < dist < 12.0:
+                if 0.0 < dist < self.OBSTACLE_PAUSE_CM:
                     print(f"[Robot] Obstacle detected at {dist:.1f} cm! Pausing forward movement...")
                     self.stop()
                     self.worried()
 
-                    # Wait for obstacle to clear
-                    while True:
+                    # Wait for obstacle to clear, but never forever (that would freeze the chat loop)
+                    wait_until = time.time() + self.OBSTACLE_WAIT_MAX_S
+                    cleared = False
+                    while time.time() < wait_until and self.connected:
                         time.sleep(0.15)
                         dist = self.proximity_monitor.get_distance()
-                        if dist <= 0.0 or dist >= 14.0:
-                            print("[Robot] Path cleared! Resuming forward movement...")
-                            self.send("FORWARD")
-                            self.happy()
+                        if dist <= 0.0 or dist >= self.OBSTACLE_RESUME_CM:
+                            cleared = True
                             break
+
+                    if not cleared:
+                        print("[Robot] Path still blocked — cancelling forward movement.")
+                        return
+                    print("[Robot] Path cleared! Resuming forward movement...")
+                    self.send("FORWARD")
+                    self.happy()
 
             chunk = min(0.1, remaining)
             time.sleep(chunk)
@@ -236,7 +250,6 @@ class RobotController:
                     if not reply:
                         continue
                     if "distance" in reply:
-                        import json
                         data = json.loads(reply)
                         # Skip obstacle_alert/obstacle_blocked broadcasts ("distance_cm")
                         if data.get("type") != "distance":
