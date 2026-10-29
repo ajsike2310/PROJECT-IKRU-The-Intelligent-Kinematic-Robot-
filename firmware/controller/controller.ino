@@ -128,6 +128,13 @@ bool safetyBrakeEnabled = true;
 bool isMovingForward = false;
 unsigned long lastSonarTime = 0;
 const unsigned long SONAR_INTERVAL_MS = 60;
+const unsigned long ECHO_TIMEOUT_US = 25000;  // ~400 cm; longer echoes count as "no echo"
+
+// Echo pulse timed by a pin-change interrupt, so loop() never blocks in pulseIn()
+volatile unsigned long echoRiseUs = 0;
+volatile unsigned long echoWidthUs = 0;
+volatile bool echoReady = false;
+bool sonarPingPending = false;
 
 void stopMotors();
 void driveMotors(int leftPct, int rightPct);
@@ -1730,36 +1737,77 @@ float getMedianDistance() {
   return sorted[2]; // Middle element (median)
 }
 
+// Rising edge = echo starts, falling edge = echo ends -> pulse width
+void IRAM_ATTR onEchoChange() {
+  unsigned long t = micros();
+  if (digitalRead(ECHO_PIN) == HIGH) {
+    echoRiseUs = t;
+  } else if (echoRiseUs != 0) {
+    echoWidthUs = t - echoRiseUs;
+    echoRiseUs = 0;
+    echoReady = true;
+  }
+}
+
+void processSonarSample(float rawDistance);
+
 void updateUltrasonic() {
+  // 1. Consume a finished echo as soon as it arrives (no waiting)
+  if (echoReady) {
+    noInterrupts();
+    unsigned long duration = echoWidthUs;
+    echoReady = false;
+    interrupts();
+    sonarPingPending = false;
+
+    float rawDistance = 999.0;
+    if (duration > 0 && duration <= ECHO_TIMEOUT_US) {
+      // Speed of sound = 343 m/s = 0.0343 cm/us -> distance = (duration * 0.0343) / 2
+      rawDistance = (duration * 0.0343) / 2.0;
+
+      // Discard acoustic cross-talk / transducer blind zone (< 2.5 cm)
+      if (rawDistance < 2.5) {
+        rawDistance = 999.0;
+      }
+    }
+    processSonarSample(rawDistance);
+  }
+
+  // 2. Fire the next ping on schedule
   unsigned long now = millis();
   if (now - lastSonarTime < SONAR_INTERVAL_MS) {
     return;
   }
   lastSonarTime = now;
 
+  // Previous ping never echoed back -> nothing in range (same as a pulseIn() timeout)
+  if (sonarPingPending) {
+    processSonarSample(999.0);
+  }
+
+  // Some HC-SR04 clones hold ECHO high after a missed echo; don't re-trigger until it drops
+  if (digitalRead(ECHO_PIN) == HIGH) {
+    sonarPingPending = true;
+    return;
+  }
+
+  noInterrupts();
+  echoRiseUs = 0;
+  echoReady = false;
+  interrupts();
+
   // Clear trigger pin
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(4);
 
-  // Emit 10 microsecond HIGH pulse
+  // Emit 10 microsecond HIGH pulse; the echo is timed by onEchoChange()
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
+  sonarPingPending = true;
+}
 
-  // Measure pulse duration (timeout = 25000 us = ~400 cm max range)
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 25000);
-
-  float rawDistance = 999.0;
-  if (duration > 0) {
-    // Speed of sound = 343 m/s = 0.0343 cm/us -> distance = (duration * 0.0343) / 2
-    rawDistance = (duration * 0.0343) / 2.0;
-
-    // Discard acoustic cross-talk / transducer blind zone (< 2.5 cm)
-    if (rawDistance < 2.5) {
-      rawDistance = 999.0;
-    }
-  }
-
+void processSonarSample(float rawDistance) {
   // Push into median filter history buffer
   sonarHistory[sonarHistoryIdx] = rawDistance;
   sonarHistoryIdx = (sonarHistoryIdx + 1) % SONAR_SAMPLES;
@@ -1806,6 +1854,7 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   digitalWrite(TRIG_PIN, LOW);
+  attachInterrupt(digitalPinToInterrupt(ECHO_PIN), onEchoChange, CHANGE);
 
   // Serial
   Serial.begin(115200);

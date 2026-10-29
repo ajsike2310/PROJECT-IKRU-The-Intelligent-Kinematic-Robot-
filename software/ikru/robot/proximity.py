@@ -14,6 +14,7 @@ class ProximityMonitor:
 
     DANGER_THRESHOLD_CM = 10.0
     CAUTION_THRESHOLD_CM = 30.0
+    STALE_READ_S = 1.0  # how long a good reading survives failed polls
 
     def __init__(self, robot_controller, idle_manager=None, poll_interval=0.25):
         self.robot = robot_controller
@@ -27,6 +28,7 @@ class ProximityMonitor:
         self._lock = threading.Lock()
         self.last_danger_time = 0
         self.last_caution_time = 0
+        self.last_good_read_time = 0.0
 
     def start(self):
         """Starts the background ultrasonic proximity monitoring thread."""
@@ -93,6 +95,14 @@ class ProximityMonitor:
                 # Query ESP32 ultrasonic distance
                 cm = self.robot.get_distance(timeout=0.6)
                 now = time.time()
+
+                # A single dropped reply (-1) shouldn't wipe a real reading and make the
+                # path look clear — keep the last good value until it is STALE_READ_S old.
+                if cm < 0:
+                    if now - self.last_good_read_time < self.STALE_READ_S:
+                        continue
+                else:
+                    self.last_good_read_time = now
 
                 with self._lock:
                     self.current_distance_cm = cm
